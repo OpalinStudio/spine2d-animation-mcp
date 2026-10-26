@@ -23,7 +23,7 @@ def test_windows_candidates_prefer_console_build():
 
 
 def test_macos_candidates():
-    paths = [str(p) for p in cli.candidate_paths("Darwin", {"HOME": "/Users/me"})]
+    paths = [p.as_posix() for p in cli.candidate_paths("Darwin", {"HOME": "/Users/me"})]
     assert paths[0] == "/Applications/Spine.app/Contents/MacOS/Spine"
     assert "/Users/me/Applications/Spine.app/Contents/MacOS/Spine" in paths
 
