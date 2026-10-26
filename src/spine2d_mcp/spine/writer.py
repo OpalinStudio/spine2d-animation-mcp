@@ -1,4 +1,4 @@
-"""Serialize a SpineProject to a Spine 4.2 skeleton JSON file.
+"""Serialize a SpineProject to a Spine 4.3 skeleton JSON file.
 
 The Spine editor's reader applies the same defaults documented in
 `schema.py`, and rejects redundant default-valued fields, so we dump with
@@ -28,6 +28,22 @@ def to_dict(project: SpineProject) -> dict:
         by_alias=True, exclude_defaults=True, exclude_none=True, mode="json"
     )
     out["skeleton"].setdefault("spine", project.skeleton.spine)
+    # Skin `name` is read without a default (getString("name")), so the
+    # "default" skin must keep its name even though it equals the model default.
+    for skin, model in zip(out.get("skins", []), project.skins):
+        skin["name"] = model.name
+        skin.setdefault("attachments", {})
+        out_skin = {"name": skin.pop("name"), **skin}
+        skin.clear()
+        skin.update(out_skin)
+    # Constraint `type` is required by the 4.3 reader even though "ik" is the
+    # model default, so exclude_defaults must not drop it.
+    if project.constraints:
+        out["constraints"] = [
+            {"type": c.type, **c.model_dump(by_alias=True, exclude_defaults=True,
+                                            exclude_none=True, mode="json")}
+            for c in project.constraints
+        ]
     return out
 
 

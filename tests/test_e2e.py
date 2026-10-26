@@ -26,7 +26,7 @@ def test_pipeline_uses_atlas_extension_not_txt(synthetic_psd, tmp_path):
 def test_pipeline_json_is_valid_spine(synthetic_psd, tmp_path):
     result = import_psd_to_spine(synthetic_psd, str(tmp_path / "out"))
     data = json.loads(result.project_path.read_text())
-    assert data["skeleton"]["spine"] == "4.2"
+    assert data["skeleton"]["spine"].startswith("4.3")
     bone_names = {b["name"] for b in data["bones"]}
     assert "root" in bone_names and "torso" in bone_names
     # every slot's bone exists; every attachment slot exists
@@ -56,5 +56,5 @@ def test_mcp_tool_wrapper(synthetic_psd, tmp_path):
     from spine2d_mcp.server import import_psd_to_spine as tool
 
     res = tool(synthetic_psd, str(tmp_path / "out"))
-    assert set(res) == {"project_path", "atlas_path", "png_paths"}
+    assert {"project_path", "atlas_path", "png_paths", "image_paths"} <= set(res)
     assert res["project_path"].endswith(".json")

@@ -1,19 +1,24 @@
-"""Pydantic models for the Spine 4.2 skeleton JSON format.
+"""Pydantic models for the subset of the Spine 4.3 skeleton JSON format that
+the PSD importer produces.
 
 Field names and defaults mirror the canonical reader
-`reference/SkeletonJson.java` (spine-runtimes 4.2). The Spine editor's reader
+`reference/SkeletonJson.java` (spine-runtimes 4.3). The Spine editor's reader
 rejects unknown fields and is sensitive to exact names, so every field here is
 verified against that reader. Serialization must use
 `model_dump(by_alias=True, exclude_defaults=True, exclude_none=True)` — the
 editor tolerates omitted fields (it applies the same defaults) but chokes on
 redundant default-valued fields.
 
-Notable 4.2 specifics:
+Notable specifics:
 - Bone transform-inheritance field is `inherit` (default "normal"), NOT
-  `transform` as in older versions.
-- Rotate animation keyframes use `angle`, not `rotation` (handled in the
-  animation models, added in Phase 1).
+  `transform` as in versions before 4.2.
+- 4.3 stores all constraints in one `constraints` array; each entry has a
+  `type` and the array order is the update order (no `order` field).
+- IK `uniform` (4.2) became `scaleY`: "none" | "uniform" | "volume".
 - Region attachment `width`/`height` are read without a default → required.
+
+Everything beyond this subset (meshes, sliders, physics, animations...) is
+edited as plain dicts, see `document.py`.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from __future__ import annotations
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from .format import spine_version
 
 
 class _SpineModel(BaseModel):
@@ -46,7 +53,7 @@ class Skeleton(_SpineModel):
     """The `skeleton` header object. `spine` version string is required for the
     editor to pick the right reader."""
 
-    spine: str = "4.2"
+    spine: str = Field(default_factory=spine_version)
     x: float = 0.0
     y: float = 0.0
     width: float = 0.0
@@ -81,16 +88,16 @@ class Slot(_SpineModel):
 
 
 class IkConstraint(_SpineModel):
+    type: str = Field(default="ik", frozen=True)
     name: str
-    order: int = 0
     bones: list[str]
     target: str
+    scaleY: str | None = None
     mix: float = 1.0
     softness: float = 0.0
     bendPositive: bool = True
     compress: bool = False
     stretch: bool = False
-    uniform: bool = False
 
 
 class RegionAttachment(_SpineModel):
@@ -120,10 +127,10 @@ class Skin(_SpineModel):
 
 
 class SpineProject(_SpineModel):
-    """Top-level Spine 4.2 skeleton document."""
+    """Top-level Spine 4.3 skeleton document."""
 
     skeleton: Skeleton = Field(default_factory=Skeleton)
     bones: list[Bone] = Field(default_factory=list)
     slots: list[Slot] = Field(default_factory=list)
-    ik: list[IkConstraint] = Field(default_factory=list)
+    constraints: list[IkConstraint] = Field(default_factory=list)
     skins: list[Skin] = Field(default_factory=list)

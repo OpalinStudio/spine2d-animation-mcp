@@ -44,7 +44,7 @@ def test_duplicate_bone_name_fails():
 def test_ik_missing_target_fails():
     proj = SpineProject(
         bones=[Bone(name="root"), Bone(name="a", parent="root")],
-        ik=[IkConstraint(name="k", bones=["a"], target="ghost")],
+        constraints=[IkConstraint(name="k", bones=["a"], target="ghost")],
     )
     with pytest.raises(SpineValidationError, match="target"):
         validate(proj)
@@ -57,3 +57,41 @@ def test_attachment_to_missing_slot_fails():
     )
     with pytest.raises(SpineValidationError, match="missing slot"):
         validate(proj)
+
+
+def test_43_format_rules_on_raw_data():
+    from spine2d_mcp.spine.validator import validate_data
+
+    data = {
+        "skeleton": {"spine": "4.3.00"},
+        "bones": [{"name": "root"}, {"name": "a", "parent": "root"}],
+        "constraints": [
+            {"type": "physics", "name": "same", "bone": "a", "rotate": 1},
+            {"type": "transform", "name": "same", "source": "root", "bones": ["a"],
+             "properties": {"rotate": {"to": {"rotate": {}}}}},
+        ],
+        "skins": [{"name": "default"}],
+    }
+    # Constraint names are unique per type, like SkeletonData.findConstraint.
+    assert validate_data(data).ok
+    data["constraints"].append({"type": "physics", "name": "same", "bone": "a", "rotate": 1})
+    assert "duplicate physics constraint" in " ".join(validate_data(data).errors)
+
+
+@pytest.mark.skipif("SPINE_EXAMPLES_DIR" not in __import__("os").environ,
+                    reason="set SPINE_EXAMPLES_DIR to spine-runtimes/examples (4.3 branch)")
+def test_official_43_examples_validate():
+    """Every skeleton exported by Spine 4.3 in spine-runtimes/examples must
+    pass (guards against false positives)."""
+    import json
+    import os
+    from pathlib import Path
+
+    from spine2d_mcp.spine.validator import validate_data
+
+    files = [p for p in Path(os.environ["SPINE_EXAMPLES_DIR"]).glob("*/export/*.json")
+             if not p.name.startswith("atlas")]
+    assert files
+    for p in files:
+        report = validate_data(json.loads(p.read_text(encoding="utf-8")))
+        assert report.ok, (p.name, report.errors[:3])

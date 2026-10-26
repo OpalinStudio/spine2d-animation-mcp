@@ -26,7 +26,7 @@ def test_non_default_bone_fields_kept():
 
 
 def test_inherit_field_name():
-    """4.2 uses `inherit`, not `transform`."""
+    """4.2+ uses `inherit`, not `transform`."""
     from spine2d_mcp.spine.schema import Inherit
 
     proj = SpineProject(bones=[Bone(name="b", inherit=Inherit.noScale)])
@@ -46,11 +46,15 @@ def test_region_attachment_required_dims():
     assert region == {"width": 64.0, "height": 128.0}
 
 
-def test_ik_constraint_has_order():
-    """`order` is required by the 4.2 reader (old code omitted it)."""
+def test_ik_constraint_in_unified_constraints_array():
+    """4.3 stores IK in `constraints` with a mandatory `type`, no `order`."""
     ik = IkConstraint(name="leg_ik", bones=["thigh", "shin"], target="foot")
-    proj = SpineProject(ik=[ik])
-    out = to_dict(proj)["ik"][0]
+    proj = SpineProject(constraints=[ik])
+    data = to_dict(proj)
+    assert "ik" not in data
+    out = data["constraints"][0]
+    assert out["type"] == "ik"
+    assert "order" not in out
     assert out["name"] == "leg_ik"
     assert out["bones"] == ["thigh", "shin"]
     assert out["target"] == "foot"
@@ -58,7 +62,13 @@ def test_ik_constraint_has_order():
 
 def test_skeleton_version_present():
     out = to_dict(SpineProject())
-    assert out["skeleton"]["spine"] == "4.2"
+    assert out["skeleton"]["spine"].startswith("4.3")
+
+
+def test_default_skin_keeps_its_name():
+    """The 4.3 reader requires skin `name` even for the default skin."""
+    out = to_dict(SpineProject(skins=[Skin()]))
+    assert out["skins"][0]["name"] == "default"
 
 
 def test_roundtrip_through_json():
