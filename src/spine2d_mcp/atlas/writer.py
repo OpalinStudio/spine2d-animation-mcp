@@ -79,3 +79,33 @@ def compose_pages(
         page.save(p, "PNG")
         paths.append(p)
     return paths
+
+
+def pack_folder(
+    images_dir: str | Path,
+    out_dir: str | Path,
+    name: str,
+    max_size: int = 2048,
+    padding: int = 2,
+) -> tuple[Path, list[Path], list[str]]:
+    """Pack every PNG of a folder (recursively) into `<name>.atlas` + pages.
+    Region names are the paths relative to the folder without extension
+    (`arm/left.png` -> `arm/left`), as the Spine texture packer names them."""
+    from .packer import Region, pack
+
+    images_dir = Path(images_dir)
+    files = sorted(p for p in images_dir.rglob("*.png") if p.is_file())
+    if not files:
+        raise ValueError(f"no PNG images in {images_dir}")
+    images: dict[str, Image.Image] = {}
+    regions = []
+    for p in files:
+        rel = p.relative_to(images_dir).with_suffix("").as_posix()
+        img = Image.open(p).convert("RGBA")
+        images[rel] = img
+        regions.append(Region(name=rel, width=img.width, height=img.height))
+    layout = pack(regions, max_size=max_size, padding=padding)
+    out_dir = Path(out_dir)
+    atlas_path = write_atlas_text(layout, name, out_dir / f"{name}.atlas")
+    pages = compose_pages(layout, images, name, out_dir)
+    return atlas_path, pages, list(images)

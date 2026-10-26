@@ -22,6 +22,7 @@ segment animations transfer onto skeletons built from sparse PSDs.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..atlas.packer import AtlasLayout, Region, pack
@@ -38,7 +39,13 @@ class BuildResult:
     images: dict[str, PsdLayer]  # region name -> source layer (for atlas paste)
 
 
-def build(parsed: ParsedPsd, max_atlas_size: int = 2048) -> BuildResult:
+def build(
+    parsed: ParsedPsd, max_atlas_size: int = 2048, orient_bones: bool = False
+) -> BuildResult:
+    """Build the rig. With `orient_bones`, bones point along their body part
+    (limbs down, spine/neck/head up) and get a length, like a hand-made rig:
+    bones draw along the limbs in the editor and IK constraints work. Without
+    it every bone keeps rotation 0 (the original PoC behavior)."""
     # Map canonical part -> layer, keeping each layer's z-index for draw order.
     parts: dict[str, PsdLayer] = {}
     part_z: dict[str, int] = {}
@@ -60,16 +67,30 @@ def build(parsed: ParsedPsd, max_atlas_size: int = 2048) -> BuildResult:
     # World pivots for every bone in the chain (present + virtual).
     world = _compute_pivots(chain, present, parts, parsed)
 
+    rot, length = (
+        _orientation(chain, present, parts, world) if orient_bones else ({}, {})
+    )
+
     bones: list[Bone] = [Bone(name=conv.ROOT_BONE)]
     for part in chain:
         parent = conv.parent_of(part)
         px, py = world[part]
         if parent == conv.ROOT_BONE:
-            lx, ly = px, py
+            ppx, ppy = 0.0, 0.0
         else:
             ppx, ppy = world[parent]
-            lx, ly = px - ppx, py - ppy
-        bones.append(Bone(name=part, parent=parent, x=lx, y=ly))
+        prot = rot.get(parent, 0.0)
+        lx, ly = _rotate(px - ppx, py - ppy, -prot)
+        bones.append(
+            Bone(
+                name=part,
+                parent=parent,
+                x=_round(lx),
+                y=_round(ly),
+                rotation=_round(rot.get(part, 0.0) - prot),
+                length=_round(length.get(part, 0.0)),
+            )
+        )
 
     # Slots in PSD z-order (draw order); only present parts get a slot.
     slots: list[Slot] = []
@@ -81,12 +102,15 @@ def build(parsed: ParsedPsd, max_atlas_size: int = 2048) -> BuildResult:
         icx = layer.left + layer.width / 2.0
         icy = parsed.height - (layer.top + layer.height / 2.0)
         bx, by = world[part]
+        wr = rot.get(part, 0.0)
+        ax, ay = _rotate(icx - bx, icy - by, -wr)
         attachments[part] = {
             part: RegionAttachment(
                 width=float(layer.width),
                 height=float(layer.height),
-                x=icx - bx,
-                y=icy - by,
+                x=_round(ax),
+                y=_round(ay),
+                rotation=_round(-wr),
             )
         }
 
@@ -110,6 +134,59 @@ def build(parsed: ParsedPsd, max_atlas_size: int = 2048) -> BuildResult:
         atlas=atlas,
         images={part: parts[part] for part in present},
     )
+
+
+def _round(v: float) -> float:
+    v = round(v, 4)
+    return 0.0 if v == 0 else v
+
+
+def _rotate(x: float, y: float, deg: float) -> tuple[float, float]:
+    if not deg:
+        return x, y
+    r = math.radians(deg)
+    c, s = math.cos(r), math.sin(r)
+    return x * c - y * s, x * s + y * c
+
+
+# World direction a part extends in, from the side its joint is on.
+_SIDE_ROTATION = {"top": -90.0, "bottom": 90.0, "left": 0.0, "right": 180.0}
+
+
+def _orientation(
+    chain: list[str],
+    present: set[str],
+    parts: dict[str, PsdLayer],
+    world: dict[str, tuple[float, float]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """World rotation and length per bone for an oriented rig."""
+    rot: dict[str, float] = {}
+    length: dict[str, float] = {}
+    for part in chain:
+        side = conv.joint_side(part)
+        layer = parts.get(part)
+        if side is not None:
+            rot[part] = _SIDE_ROTATION[side]
+            if layer is not None:
+                length[part] = float(
+                    layer.height if side in ("top", "bottom") else layer.width
+                )
+            continue
+        # Spine chain (hip/torso/chest): point up toward the next bone.
+        rot[part] = 90.0
+        kids = [c for c in chain if conv.parent_of(c) == part]
+        up = [c for c in kids if c in ("torso", "chest", "neck", "head")]
+        if up:
+            cx, cy = world[up[0]]
+            px, py = world[part]
+            d = math.hypot(cx - px, cy - py)
+            if d > 1e-6:
+                rot[part] = math.degrees(math.atan2(cy - py, cx - px))
+                length[part] = d
+                continue
+        if layer is not None:
+            length[part] = layer.height / 2.0
+    return rot, length
 
 
 def _compute_pivots(

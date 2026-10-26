@@ -1,7 +1,7 @@
 [project]
 name = "spine2d-mcp"
-version = "0.1.0"
-description = "MCP server that converts PSD characters into Spine 4.2 projects for Unity"
+version = "0.2.0"
+description = "MCP server to rig, animate, preview and export Spine 4.3 skeletons (macOS, Windows, Linux)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

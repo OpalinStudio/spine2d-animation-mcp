@@ -106,4 +106,4 @@ def test_serializes_without_extra_fields(synthetic_psd):
     out = to_dict(build(parse_psd(synthetic_psd)).project)
     root = next(b for b in out["bones"] if b["name"] == "root")
     assert root == {"name": "root"}
-    assert out["skeleton"]["spine"] == "4.2"
+    assert out["skeleton"]["spine"].startswith("4.3")
