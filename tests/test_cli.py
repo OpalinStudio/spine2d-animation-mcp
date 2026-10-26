@@ -28,6 +28,12 @@ def test_macos_candidates():
     assert "/Users/me/Applications/Spine.app/Contents/MacOS/Spine" in paths
 
 
+def test_linux_candidates():
+    paths = [p.as_posix() for p in cli.candidate_paths("Linux", {"HOME": "/home/me"})]
+    assert paths[0] == "/home/me/Spine/Spine.sh"
+    assert "/opt/Spine/Spine.sh" in paths
+
+
 def test_app_bundle_and_folder_are_normalized(tmp_path):
     app = tmp_path / "Spine.app"
     (app / "Contents" / "MacOS").mkdir(parents=True)

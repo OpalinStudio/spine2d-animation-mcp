@@ -115,7 +115,7 @@ def find_spine(explicit: str | None = None) -> Path:
     raise SpineCliError(
         "Spine executable not found. Set SPINE_EXE to the Spine executable "
         "(Windows: C:\\Program Files\\Spine\\Spine.com, macOS: "
-        "/Applications/Spine.app/Contents/MacOS/Spine). Tried: " + "; ".join(tried)
+        "/Applications/Spine.app/Contents/MacOS/Spine, Linux: ~/Spine/Spine.sh). Tried: " + "; ".join(tried)
     )
 
 

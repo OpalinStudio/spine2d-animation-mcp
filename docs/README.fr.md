@@ -70,7 +70,9 @@ La liste complète des outils est dans le [README anglais](../README.md#what-it-
 
 Si `uv` n'est pas trouvé, mettre son chemin complet (`which uv` sur Mac, `where uv` sur Windows). Redémarrer Claude Desktop ensuite.
 
-**Claude Code** : `claude mcp add spine -- uv --directory /chemin/vers/spine2d-animation-mcp run spine2d-mcp`
+**Claude Code** (macOS, Windows ou Linux) : `claude mcp add spine -- uv --directory /chemin/vers/spine2d-animation-mcp run spine2d-mcp`
+
+**Linux** : Claude Desktop n'existe pas officiellement sous Linux, on passe donc par Claude Code ou tout autre client MCP. Spine est cherché dans `~/Spine/Spine.sh`, `/opt/Spine/Spine.sh`, `/usr/local/Spine/Spine.sh` puis dans le `PATH`. Sinon, définir `SPINE_EXE=/chemin/vers/Spine.sh`.
 
 Sous Windows, `Spine.com` (version console) est préféré à `Spine.exe` pour la ligne de commande, car il affiche la sortie et attend la fin de l'export.
 
