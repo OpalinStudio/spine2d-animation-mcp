@@ -305,6 +305,8 @@ def render(
     max_sheet_frames: int = 24,
     timeout: float = 900,
     runtime_version: str | None = None,
+    overlays: list[dict] | None = None,
+    loop: bool = True,
 ) -> dict:
     if format not in FORMATS:
         raise RuntimeRenderError(f"format must be one of {', '.join(FORMATS)}")
@@ -326,6 +328,7 @@ def render(
             "scale": scale, "width": width, "height": height, "padding": padding,
             "background": background, "supersample": supersample, "warmup": warmup,
             "crop": crop, "out_dir": str(frames_dir), "prefix": "frame_",
+            "overlays": overlays or [], "loop": loop,
         }
         res = _run_worker(req, timeout)
         if not res.get("ok"):

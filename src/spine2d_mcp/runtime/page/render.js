@@ -85,12 +85,31 @@
       if (!data.findAnimation(cfg.animation)) throw new Error("animation not found: " + cfg.animation);
       st.setAnimation(0, cfg.animation, cfg.loop !== false);
     }
-    const inst = { sk, st };
+    // Extra tracks (e.g. blink on track 1): [{track, animation, start, loop}], fired when
+    // the playhead reaches `start`, exactly as a game state machine would set them.
+    const overlays = (cfg.overlays || []).map((o) => Object.assign({ fired: false }, o))
+      .sort((a, b) => a.start - b.start);
+    for (const o of overlays) {
+      if (!data.findAnimation(o.animation)) throw new Error("animation not found: " + o.animation);
+    }
+    const inst = { sk, st, t: 0, overlays };
+    fire(inst);
     step(inst, 0);
     return inst;
   }
 
+  function fire(inst) {
+    for (const o of inst.overlays) {
+      if (!o.fired && inst.t >= o.start - 1e-6) {
+        inst.st.setAnimation(o.track || 1, o.animation, !!o.loop);
+        o.fired = true;
+      }
+    }
+  }
+
   function step(inst, dt) {
+    inst.t += dt;
+    fire(inst);
     inst.st.update(dt);
     inst.st.apply(inst.sk);
     if (S.Physics) {

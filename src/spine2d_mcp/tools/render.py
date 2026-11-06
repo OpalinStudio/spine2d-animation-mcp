@@ -95,6 +95,8 @@ def runtime_render(
     columns: int = 6,
     matte: str | None = None,
     runtime_version: str | None = None,
+    overlays: list[dict] | None = None,
+    loop: bool = True,
 ) -> dict:
     """Render with the OFFICIAL Spine web runtime (what the game will show,
     physics and clipping included), in seconds, without the editor.
@@ -112,12 +114,18 @@ def runtime_render(
     already in motion (like the editor's Warm Up). supersample 2 = rendered
     at 2x then downscaled for clean edges. runtime_version: default = the
     data's major.minor (a 4.2 export renders with the 4.2 runtime). Returns
-    the output path, size, frames, world bounds and what the runtime loaded."""
+    the output path, size, frames, world bounds and what the runtime loaded.
+    overlays: other animations on other tracks, set when the playhead reaches
+    `start` like a game state machine does, e.g. [{"track": 1, "animation":
+    "blink", "start": 1.2}, {"track": 1, "animation": "blink", "start": 4.0}].
+    `duration` sets the length of the capture (default: the main animation).
+    loop=False plays the main animation once and holds its last pose (one-shot
+    actions, blink) instead of restarting it when `duration` is longer."""
     return rt_render.render(
         skeleton, output, format=format, animation=animation, skin=skin, time=time, fps=fps,
         duration=duration, loops=loops, scale=scale, width=width, height=height, padding=padding,
         background=background, supersample=supersample, warmup=warmup, atlas=atlas, crop=crop,
-        columns=columns, matte=matte, runtime_version=runtime_version,
+        columns=columns, matte=matte, runtime_version=runtime_version, overlays=overlays, loop=loop,
     )
 
 

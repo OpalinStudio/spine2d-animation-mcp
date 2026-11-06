@@ -447,7 +447,9 @@ def auto_weights(
         scored = [(w, b) for w, b in scored if w >= prune] or scored[:1]
         tot = sum(w for w, _ in scored)
         out.append(len(scored))
-        for w, b in scored:
+        # Influences sorted by bone index: the Spine 4.3.26 editor import fails with
+        # "[aioob] Index -2 out of bounds" on unsorted ones (the runtimes accept any order).
+        for w, b in sorted(scored, key=lambda wb: names.index(wb[1])):
             bx, by = pose.bones[b].world_to_local(wx, wy)
             out += [names.index(b), _r(bx), _r(by), round(w / tot, 5)]
     return out

@@ -255,6 +255,7 @@ def handle(req: dict) -> dict:
                 "skeleton": fs_url(skeleton), "atlas": fs_url(atlas), "binary": binary,
                 "dataScale": req.get("data_scale") or 1, "skin": req.get("skin"),
                 "animation": req.get("animation"), "loop": req.get("loop", True),
+                "overlays": req.get("overlays") or [],
             })
             res["runtime_version"] = req.get("runtime_version")
             if logs:

@@ -432,17 +432,22 @@ class _Validator:
             return  # unweighted
         # Weighted: [boneCount, (bone, x, y, weight) * boneCount] per vertex.
         i, count, nbones = 0, 0, len(self.bones)
+        unsorted = 0
         try:
             while i < len(verts):
                 bc = int(verts[i])
                 i += 1
                 if bc < 1:
                     raise ValueError("vertex with no bones")
+                prev = -1
                 for _ in range(bc):
                     bi = int(verts[i])
                     if not 0 <= bi < nbones:
                         self.err(f"{where}: weighted vertex bone index {bi} out of range")
                         return
+                    if bi <= prev:
+                        unsorted += 1
+                    prev = bi
                     i += 4
                 count += 1
             if i != len(verts):
@@ -453,6 +458,12 @@ class _Validator:
                 f"({verts_len}) nor a valid weighted layout"
             )
             return
+        if unsorted:
+            self.warn(
+                f"{where}: {unsorted} weighted vertices list their bones out of index order; "
+                "the Spine 4.3.26 editor import fails on them ([aioob] Index -2), the runtimes "
+                "accept them (rebind with bind_mesh_weights to fix)"
+            )
         if count * 2 != verts_len:
             self.err(
                 f"{where}: weighted vertices describe {count} vertices, expected "

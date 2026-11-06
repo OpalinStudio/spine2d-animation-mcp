@@ -165,3 +165,25 @@ def test_edit_rejects_invalid_result(tmp_path):
     with pytest.raises(doc.SpineEditError):
         doc.save(d, p)
     assert doc.load(p)["slots"][0]["bone"] == "torso"
+
+
+def test_auto_weights_lists_influences_in_bone_index_order():
+    """Spine 4.3.26 editor import fails on unsorted influences ([aioob] Index -2)."""
+    d = _rig()
+    mesh = att.grid_mesh(80, 120, 4, 6)
+    doc.set_attachment(d, "tail", "tail", mesh)
+    # bones given out of index order on purpose
+    mesh["vertices"] = att.auto_weights(d, "tail", mesh, ["tail2", "torso", "tail1"], max_influences=3)
+    v = mesh["vertices"]
+    i = 0
+    while i < len(v):
+        n = int(v[i]); i += 1
+        idx = [int(v[i + 4 * k]) for k in range(n)]
+        assert idx == sorted(idx) and len(set(idx)) == n
+        i += 4 * n
+    rep = validate_data(d)
+    assert rep.ok and not any("index order" in w for w in rep.warnings)
+    # the validator warns on a hand-written unsorted layout
+    mesh["vertices"] = [2, 2, 0, 0, 0.5, 1, 0, 0, 0.5] + v[9:] if int(v[0]) == 2 else v
+    if int(v[0]) == 2:
+        assert any("index order" in w for w in validate_data(d).warnings)
