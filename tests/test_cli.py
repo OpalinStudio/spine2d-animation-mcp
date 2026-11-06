@@ -101,11 +101,47 @@ def test_import_data_variants(fake_spine, tmp_path, monkeypatch):
     cli.import_data("hero.json", "hero.spine", skeleton_name="hero", scale=0.5)
     a = fake_spine()[-1]
     assert a[:2] == ["-u", "4.3.xx"]
-    assert a[-4:] == ["-s", "0.5", "-r", "hero"]
+    # 4.3 syntax: -i <data> -s <scale> -o <project> --to <name> ... -r (last)
+    assert a[2] == "-i" and a[4:6] == ["-s", "0.5"] and a[6] == "-o"
+    assert a[-3:] == ["--to", "hero", "-r"]
     cli.import_data("anims.json", "hero.spine", skeleton_name="hero", import_animations=True, merge=True)
-    assert fake_spine()[-1][-4:] == ["-r", "hero", "-a", "--merge"]
+    assert fake_spine()[-1][-5:] == ["--to", "hero", "-a", "--merge", "-r"]
     cli.import_data("anims.json", "hero.spine", animation="walk")
-    assert fake_spine()[-1][-2:] == ["-a", "walk"]
+    assert fake_spine()[-1][-3:] == ["-a", "walk", "-r"]
+    cli.import_data("anims.json", "hero.spine", skeleton_name="hero", animation=["walk", "run"],
+                    replace=True, from_skeleton="src")
+    a = fake_spine()[-1]
+    assert a[a.index("--from") + 1] == "src"
+    assert a[-8:] == ["--to", "hero", "-a", "walk", "-a", "run", "--replace", "-r"]
+
+
+def test_image_export_settings_classes():
+    for kind, spec in cli.EDITOR_IMAGE_FORMATS.items():
+        s = cli.image_export_settings(kind, "hero", "walk", scale=50, fps=24)
+        assert s["class"] == spec["class"]
+        assert s["skeleton"] == "hero" and s["animation"] == "walk" and s["animationType"] == "single"
+        assert s["scale"] == 50 and s["fps"] == 24 and s["speed"] >= 1
+    gif = cli.image_export_settings("gif", "hero")
+    # Fields the 4.3.26 CLI requires for GIF (checked against the editor).
+    assert gif["colors"] == 256 and gif["transparency"] is True and gif["animationType"] == "all"
+    bg = cli.image_export_settings("png", "hero", background="#102030")
+    assert bg["background"] == {"r": 0.0627, "g": 0.1255, "b": 0.1882, "a": 1.0}
+    assert bg["transparent"] is False
+    with pytest.raises(ValueError):
+        cli.image_export_settings("psd", "hero")
+
+
+def test_editor_render_imports_json_into_temp_project(fake_spine, tmp_path):
+    from spine2d_mcp.cli.editor_render import EditorRenderError, editor_render
+
+    sk = tmp_path / "hero.json"
+    sk.write_text("{}")
+    with pytest.raises(EditorRenderError):
+        # The fake Spine writes nothing, so the import is reported as failed.
+        editor_render(str(sk), str(tmp_path / "out.gif"), format="gif", animation="walk")
+    call = fake_spine()[-1]
+    assert call[:2] == ["-i", str(sk)] and call[-3:] == ["hero", "--replace", "-r"]
+    assert "spine-editor-" in call[call.index("-o") + 1]  # throwaway project, not next to hero.json
 
 
 def test_pack_unpack_clean_info(fake_spine, tmp_path):

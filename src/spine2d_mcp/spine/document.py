@@ -62,12 +62,60 @@ def dumps(data: dict, pretty: bool = True) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
+def normalize_tint_black_timelines(data: dict) -> list[str]:
+    """On a slot with a dark color (tint black), turn `rgba` / `rgb` keys into
+    `rgba2` / `rgb2` keeping the slot's dark color constant.
+
+    Why: the Spine 4.3.26 editor's JSON import fails with
+    "[ioob] index can't be >= size: 16 >= 16" (12 for rgb) on a curved rgba/rgb
+    timeline of a dark slot (checked on macOS, 2026-11), although the runtime
+    reads it fine. The two-color timeline renders the same and imports.
+    Returns "animation/slot/timeline" for every converted timeline."""
+    dark = {s["name"]: s["dark"] for s in data.get("slots") or [] if s.get("dark")}
+    if not dark:
+        return []
+    done = []
+    for an_name, anim in (data.get("animations") or {}).items():
+        for slot, tls in (anim.get("slots") or {}).items():
+            d6 = dark.get(slot)
+            if not d6:
+                continue
+            for src, dst, n in (("rgba", "rgba2", 4), ("rgb", "rgb2", 3)):
+                keys = tls.get(src)
+                if keys is None:
+                    continue
+                if dst in tls:
+                    continue  # both present: leave it to the validator
+                dv = [int(d6[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+                new = []
+                for k in keys:
+                    nk = {kk: vv for kk, vv in k.items() if kk not in ("color", "curve")}
+                    nk["light"] = k.get("color", "ffffffff"[: n * 2])
+                    nk["dark"] = d6[:6]
+                    c = k.get("curve")
+                    if isinstance(c, list) and len(c) == 4 * n:
+                        cx1, cx2 = c[0], c[2]
+                        nk["curve"] = list(c) + [v for d in dv for v in (cx1, round(d, 5), cx2, round(d, 5))]
+                    elif c is not None:
+                        nk["curve"] = c
+                    new.append(nk)
+                del tls[src]
+                tls[dst] = new
+                done.append(f"{an_name}/{slot}/{src}")
+    return done
+
+
 def save(
     data: dict, path: str | Path, validate: bool = True, pretty: bool = True
 ) -> ValidationReport:
     """Write the skeleton. Refuses to write structurally invalid data unless
     `validate=False`, so a bad edit never corrupts the file on disk."""
+    converted = normalize_tint_black_timelines(data)
     report = validate_data(data) if validate else ValidationReport()
+    for c in converted:
+        report.warnings.append(
+            f"{c}: rgba/rgb timeline on a two-color (dark) slot converted to rgba2/rgb2 "
+            "(same look; the Spine 4.3.26 editor import crashes on the curved original)")
     if report.errors:
         raise SpineEditError(
             "edit rejected, the result would not load in Spine:\n  - "

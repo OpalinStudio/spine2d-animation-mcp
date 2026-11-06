@@ -83,9 +83,11 @@ def spine_import_data(
     project: str,
     skeleton_name: str | None = None,
     scale: float | None = None,
-    animation: str | None = None,
+    animation: str | list[str] | None = None,
     import_all_animations: bool = False,
     merge: bool = False,
+    replace: bool = False,
+    from_skeleton: str | None = None,
     extra_args: list[str] | None = None,
     spine_path: str | None = None,
     version: str | None = None,
@@ -94,14 +96,23 @@ def spine_import_data(
     .spine project, created if missing: the way to turn the JSON built with
     these tools into a project you open in Spine 4.3.
 
-    skeleton_name renames the imported skeleton. 4.3 options: `animation`
-    (import that animation into the existing skeleton `skeleton_name`),
-    import_all_animations (`-a` without name), merge (`--merge` into the
-    existing skeleton). Check spine_cli_help if your editor build differs."""
-    return cli.import_data(
+    skeleton_name: destination skeleton (`--to`; merged into if it exists).
+    from_skeleton: source skeleton when the input has several (`--from`).
+    animation: one name or a list (`-a name` each) to import only those
+    animations into skeleton_name; import_all_animations: every animation.
+    merge: merge skeletons instead of adding a new one. replace: overwrite
+    the existing skeleton / attachments / animation with the same name -
+    without it Spine adds a renamed copy ("hero2"). It modifies the project:
+    keep a copy, or import into a new project file."""
+    res = cli.import_data(
         input_path, project, skeleton_name, scale, animation, import_all_animations, merge,
-        extra_args or (), spine_path, version,
+        extra_args or (), spine_path, version, from_skeleton=from_skeleton, replace=replace,
     ).as_dict()
+    renamed = [ln.strip() for ln in res["stdout"].splitlines() if "renamed" in ln.lower()]
+    if renamed:
+        res["note"] = (f"{renamed[0]} - the project already had that name; pass replace=True to "
+                       "overwrite it instead of adding a copy")
+    return res
 
 
 @mcp.tool()

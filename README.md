@@ -20,7 +20,11 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 | **Events** | `set_event` (int/float/string/audio/volume/balance), `remove_event`, `add_event_keys` |
 | **Animation** | `manage_animation` (create/delete/rename/duplicate, 4.3 color), `set_keyframes` on **every** 4.3 timeline (bone, slot, IK, transform, path, physics incl. skeleton-wide wind/gravity, slider, deform, sequence), easing presets and bezier curves, `set_draw_order_keys` (full or partial orders, **4.3 draw order folders**), `retime_animation`, `clear_timeline` |
 | **Procedural** | `generate_animation`: idle, walk, run, jump, wave, nod, head shake/tilt, blink, hover, bounce (squash & stretch), shake, sine `oscillate`, `follow_through` (overlapping action down a chain), flash (tint black), fade in/out, pulse, tint |
-| **Preview** | `render_preview`: PNG frame, contact sheet or GIF without Spine (regions, weighted meshes, deform, colors, draw order) |
+| **Slot symbols** | `generate_animation` presets `symbol_idle` (rest loop), `symbol_land` (reel stop), `symbol_win` (squeeze, pop, tint-black flash, glow, jelly wobble), `symbol_anticipation` (near-win tease), `symbol_dim` (darken losers). They start and end on the setup pose so they chain at runtime |
+| **Official runtime render** | `runtime_render`: Esoteric's own `spine-webgl` in headless Chromium, so physics, IK, clipping, additive and tint black render exactly as in a web game: PNG, frames, contact sheet, GIF, APNG, WebP, MP4, WebM with alpha, MOV ProRes 4444 with alpha. `runtime_validate`: load JSON/.skel + atlas in the official runtime and report what it sees or the exact error |
+| **Editor render** | `editor_render`: the Spine editor's own export (reference quality): GIF, APNG, WebM, MOV, AVI or PNG / WebP / JPEG sequences, from a `.spine` or a JSON imported into a throwaway project |
+| **Delivery** | `export_web_preview`: one self-contained HTML with the Spine Web Player (animation / skin / background / speed buttons), auto-checked at phone and desktop sizes. `export_game_pack`: `.skel`/`.json` + atlas by the editor, premultiplied alpha, extra resolutions, texture memory report, runtime load check |
+| **Preview** | `render_preview`: quick pure-Python PNG frame, contact sheet or GIF (approximate: no constraints or clipping) |
 | **Atlas** | `pack_atlas`, `read_atlas`, `unpack_atlas_images` (pure Python) |
 | **Spine CLI** | `spine_status`, `spine_cli_help`, `spine_export` (JSON/binary/+pack/PNG/any settings, clean up, 4.3 `--set` overrides), `spine_import_data` (data → `.spine` project, 4.3 animation import / merge), `spine_pack`, `spine_unpack`, `spine_clean_up`, `spine_project_info`, `spine_last_export_settings`, `write_export_settings`, raw `spine_cli` |
 | **Reference** | `spine_reference`: timelines, curves, constraints, presets, 4.3 changes |
@@ -31,7 +35,10 @@ The Spine 4.3 format is taken from the official reader (`reference/SkeletonJson.
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- Spine 4.3 installed and activated, only for the `spine_*` CLI tools (everything else is pure Python)
+- Spine 4.3 installed and activated, only for the `spine_*` CLI tools, `editor_render` and `export_game_pack`
+- For the official-runtime tools: a headless Chromium (`spine_runtime_setup`, or `uv run playwright install chromium-headless-shell`) and `ffmpeg` for MP4 / WebM / MOV
+
+The Spine web runtimes are **not** vendored: they are under the Spine Runtimes License (every user needs their own Spine Editor license), so on first use the server downloads `@esotericsoftware/spine-webgl` and `spine-player` from npm, checks their sha512 integrity and caches them outside the repository (`SPINE_MCP_CACHE`, default `~/Library/Caches/spine2d-mcp` on macOS). `SPINE_RUNTIME_VERSION` picks the runtime (`4.3`, `4.2`, or exact); by default it follows the data's own version, so a 4.2 export renders with the 4.2 runtime. `SPINE_MCP_GL=software` forces CPU rendering on a machine without GPU.
 
 ## Setup
 
@@ -96,9 +103,9 @@ If `uv` is not found, use its full path (`which uv` / `where uv`).
 1. `import_psd_to_spine` on a layered PSD (or `create_skeleton` and build bones/slots yourself).
 2. Rig: IK on legs, physics on hair/tail, sliders for facial expressions, clipping, skins.
 3. Animate: `generate_animation` for a base (idle, walk...), then refine with `set_keyframes`.
-4. `render_preview` (sheet or GIF) to check the motion.
+4. `runtime_render` (sheet on the game's background color, then GIF / WebM) and `runtime_validate` to check it the way the game will show it.
 5. `spine_import_data` the JSON into a `.spine` project and open it in Spine 4.3.
-6. `spine_export` for the runtime (JSON/binary + atlas) or PNG/GIF/video.
+6. `export_game_pack` for the game, `editor_render` for presentation videos / GIFs, `export_web_preview` to review on a phone.
 
 Coordinates are Spine's: y-up, relative to the parent bone, rotations in degrees counter-clockwise; bone timeline values are offsets from the setup pose (scale is a multiplier).
 
@@ -130,7 +137,10 @@ tests/                   pytest suite
 ## Limits
 
 - `.spine` project files are a private binary format: edit the exported JSON and re-import it (`spine_import_data`).
-- The Python preview doesn't simulate constraints or clipping; use `spine_export` with PNG settings for an exact render.
+- The Python preview (`render_preview`) doesn't simulate constraints or clipping; use `runtime_render` or `editor_render`.
+- Over a transparent background, additive slots have nothing to add their light to, so glows look missing (Spine behaves the same). Pass `background` with the game's color to judge them; the tool warns.
+- Spine 4.3.26's JSON import fails on a curved `rgba` / `rgb` timeline of a tint-black (dark) slot. The server rewrites such timelines as `rgba2` / `rgb2` on save (same look) and says so.
+- The 4.3.26 CLI rejects PSD, MP4 and HTML exports; `editor_render` offers the formats that work, `runtime_render` covers MP4.
 - CLI flags added late in 4.3 (`-a`, `--merge`, `--set`) depend on your exact editor build: `spine_cli_help` prints the authoritative list.
 
 ## License

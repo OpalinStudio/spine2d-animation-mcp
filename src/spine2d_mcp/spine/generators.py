@@ -589,6 +589,218 @@ def swap_draw_order(
     set_draw_order_keys(anim, doc.slot_names(data), keys)
 
 
+# ------------------------------------------------------------ slot symbols
+# Reel-game symbol animations. They animate ONE bone that carries the whole
+# symbol (by default the only child of root, else root) plus optional slots
+# for flashes / glows, and they all start and end on the setup pose so they
+# chain cleanly at runtime (land -> idle, idle -> win -> idle, dim / undim).
+# Timing follows the classic principles: anticipation before the pop,
+# overshoot + damped wobble after it (follow-through), squash & stretch on
+# impact. Every value is a parameter; keys stay editable in Spine.
+
+
+def symbol_bone(data: dict, bone: str | None = None) -> str:
+    """`bone`, else the only direct child of root, else root."""
+    if bone:
+        doc.find_bone(data, bone)
+        return bone
+    bones = doc.bones(data)
+    root = bones[0]["name"]
+    children = [b["name"] for b in bones if b.get("parent") == root]
+    return children[0] if len(children) == 1 else root
+
+
+def _slot_base_color(data: dict, slot: str) -> str:
+    return (doc.find_slot(data, slot).get("color") or "ffffffff").lower()
+
+
+def _scale_rgb(c8: str, k: float) -> str:
+    rgb = [max(0, min(255, round(int(c8[i:i + 2], 16) * k))) for i in (0, 2, 4)]
+    return "".join(f"{v:02x}" for v in rgb) + c8[6:8]
+
+
+def symbol_idle(
+    data: dict, bone: str | None = None, name: str = "idle", duration: float = 2.0,
+    breathe: float = 0.025, float_height: float = 3.0, sway: float = 1.2,
+    mode: str = "replace",
+) -> dict:
+    """Subtle living loop for a symbol at rest: breathing scale with a slow
+    float, and a counter-phased sway. Starts on the setup pose and loops
+    seamlessly (every component's period is `duration`)."""
+    b = symbol_bone(data, bone)
+    _anim(data, name, mode)
+    keyed = []
+    if breathe:
+        oscillate(data, name, b, "scale", amplitude=breathe, period=duration, duration=duration)
+        keyed.append(f"{b}.scale")
+    if float_height:
+        oscillate(data, name, b, "translatey", amplitude=float_height, period=duration,
+                  duration=duration)
+        keyed.append(f"{b}.translatey")
+    if sway:
+        oscillate(data, name, b, "rotate", amplitude=sway, period=duration, duration=duration, phase=180)
+        keyed.append(f"{b}.rotate")
+    return {"animation": name, "duration": duration, "bone": b, "keyed": keyed, "loop": True}
+
+
+def symbol_land(
+    data: dict, bone: str | None = None, name: str = "land", duration: float = 0.45,
+    drop: float = 70.0, squash: float = 0.18, rebound: float = 0.1, mode: str = "replace",
+) -> dict:
+    """Symbol landing at reel stop: falls from `drop` units above (stretched,
+    accelerating), squashes on impact, rebounds `rebound` x drop and settles
+    on the setup pose."""
+    b = symbol_bone(data, bone)
+    anim = _anim(data, name, mode)
+    d = duration
+    hit = 0.38 * d
+    ty = [
+        {"time": 0, "value": drop, "curve": "easeInQuad"},
+        {"time": hit, "value": 0, "curve": "easeOutQuad"},
+        {"time": hit + 0.22 * d, "value": drop * rebound, "curve": "easeInQuad"},
+        {"time": hit + 0.42 * d, "value": 0, "curve": "easeOutSine"},
+        {"time": d, "value": 0},
+    ]
+    s = squash
+    sc = [
+        {"time": 0, "x": 1 - s * 0.4, "y": 1 + s * 0.5, "curve": "easeInQuad"},
+        {"time": hit, "x": 1 + s, "y": 1 - s, "curve": "easeOutBack"},
+        {"time": hit + 0.2 * d, "x": 1 - s * 0.25, "y": 1 + s * 0.3, "curve": "easeInOutSine"},
+        {"time": hit + 0.42 * d, "x": 1 + s * 0.12, "y": 1 - s * 0.12, "curve": "easeInOutSine"},
+        {"time": d, "x": 1, "y": 1},
+    ]
+    set_keys(anim, "bone", b, "translatey", ty, mode="replace")
+    set_keys(anim, "bone", b, "scale", sc, mode="replace")
+    return {"animation": name, "duration": d, "bone": b, "impact_time": round(hit, 4),
+            "keyed": [f"{b}.translatey", f"{b}.scale"], "loop": False}
+
+
+def symbol_win(
+    data: dict, bone: str | None = None, name: str = "win", duration: float = 1.2,
+    pop: float = 0.22, anticipation: float = 0.08, wiggle: float = 7.0, hop: float = 10.0,
+    flash_slots: Sequence[str] | None = None, flash_color: str = "ffffff",
+    glow_slots: Sequence[str] | None = None, mode: str = "replace",
+) -> dict:
+    """Winning-symbol celebration: a short squeeze (anticipation), a big pop
+    with overshoot, a jelly wobble (alternating x/y stretch + damped rotation)
+    and a settle back to the setup pose (loops cleanly for repeated wins).
+
+    flash_slots: slots that get a tint-black flash to `flash_color` on the
+    pop (works on any texture). glow_slots: e.g. additive glow images, faded
+    0 -> 1 -> 0 around the pop (their setup alpha is left untouched)."""
+    b = symbol_bone(data, bone)
+    anim = _anim(data, name, mode)
+    d, p, a = duration, pop, anticipation
+    t_sq, t_pop = 0.12 * d, 0.3 * d
+    sc = [
+        {"time": 0, "x": 1, "y": 1, "curve": "easeInOutSine"},
+        {"time": t_sq, "x": 1 - a * 0.6, "y": 1 - a, "curve": "easeOutCubic"},
+        {"time": t_pop, "x": 1 + p, "y": 1 + p, "curve": "easeInOutSine"},
+        {"time": 0.42 * d, "x": 1 + p * 0.65, "y": 1 + p * 1.1, "curve": "easeInOutSine"},
+        {"time": 0.54 * d, "x": 1 + p * 1.0, "y": 1 + p * 0.7, "curve": "easeInOutSine"},
+        {"time": 0.66 * d, "x": 1 + p * 0.85, "y": 1 + p * 0.85, "curve": "easeInOutSine"},
+        {"time": 0.86 * d, "x": 1.0 + p * 0.06, "y": 1.0 + p * 0.06, "curve": "easeInOutSine"},
+        {"time": d, "x": 1, "y": 1},
+    ]
+    w = wiggle
+    rot = [
+        {"time": 0, "value": 0, "curve": "easeInOutSine"},
+        {"time": t_pop, "value": w, "curve": "easeInOutSine"},
+        {"time": 0.42 * d, "value": -w * 0.75, "curve": "easeInOutSine"},
+        {"time": 0.54 * d, "value": w * 0.45, "curve": "easeInOutSine"},
+        {"time": 0.66 * d, "value": -w * 0.2, "curve": "easeInOutSine"},
+        {"time": 0.78 * d, "value": 0},
+        {"time": d, "value": 0},
+    ]
+    ty = [
+        {"time": 0, "value": 0, "curve": "easeInOutSine"},
+        {"time": t_sq, "value": -hop * 0.2, "curve": "easeOutCubic"},
+        {"time": t_pop, "value": hop, "curve": "easeInOutSine"},
+        {"time": 0.66 * d, "value": hop * 0.3, "curve": "easeInOutSine"},
+        {"time": d, "value": 0},
+    ]
+    set_keys(anim, "bone", b, "scale", sc, mode="replace")
+    set_keys(anim, "bone", b, "rotate", rot, mode="replace")
+    keyed = [f"{b}.scale", f"{b}.rotate"]
+    if hop:
+        set_keys(anim, "bone", b, "translatey", ty, mode="replace")
+        keyed.append(f"{b}.translatey")
+    c6 = flash_color.lstrip("#")[:6].lower()
+    for s in flash_slots or []:
+        slot = doc.find_slot(data, s)
+        slot.setdefault("dark", "000000")
+        base = _slot_base_color(data, s)
+        set_keys(anim, "slot", s, "rgba2", [
+            {"time": 0, "light": base, "dark": "000000", "curve": "easeInQuad"},
+            {"time": t_pop, "light": base, "dark": c6, "curve": "easeOutQuad"},
+            {"time": 0.62 * d, "light": base, "dark": "000000"},
+        ], mode="replace")
+        keyed.append(f"{s}.rgba2")
+    for s in glow_slots or []:
+        doc.find_slot(data, s)
+        set_keys(anim, "slot", s, "alpha", [
+            {"time": 0, "value": 0, "curve": "easeInQuad"},
+            {"time": t_pop, "value": 1, "curve": "easeOutSine"},
+            {"time": 0.9 * d, "value": 0},
+        ], mode="replace")
+        keyed.append(f"{s}.alpha")
+    return {"animation": name, "duration": d, "bone": b, "pop_time": round(t_pop, 4),
+            "keyed": keyed, "loop": True}
+
+
+def symbol_anticipation(
+    data: dict, bone: str | None = None, name: str = "anticipation", duration: float = 1.0,
+    tremble: float = 2.5, frequency: float = 14.0, swell: float = 0.06, beats: int = 2,
+    mode: str = "replace",
+) -> dict:
+    """Tease / near-win loop (e.g. 2 scatters landed, waiting for the 3rd):
+    a fast tremble plus a heartbeat-like swell. The tremble frequency is
+    rounded so the loop is seamless."""
+    b = symbol_bone(data, bone)
+    _anim(data, name, mode)
+    cycles = max(1, round(frequency * duration))
+    keyed = []
+    if tremble:
+        oscillate(data, name, b, "rotate", amplitude=tremble, period=duration / cycles, duration=duration)
+        keyed.append(f"{b}.rotate")
+    if swell:
+        oscillate(data, name, b, "scale", amplitude=swell / 2, period=duration / max(1, beats),
+                  duration=duration, base=1 + swell / 2, phase=-90)
+        keyed.append(f"{b}.scale")
+    return {"animation": name, "duration": duration, "bone": b, "tremble_hz": cycles / duration,
+            "keyed": keyed, "loop": True}
+
+
+def symbol_dim(
+    data: dict, slots: Sequence[str] | None = None, name: str = "dim", duration: float = 0.25,
+    amount: float = 0.45, alpha: float | None = None, mode: str = "replace",
+) -> dict:
+    """Darken non-winning symbols while the wins play: rgb x `amount` (and
+    alpha to `alpha` if given) over `duration`, then hold. Play the setup
+    pose (or an empty animation) to undim. Default: every slot."""
+    anim = _anim(data, name, mode)
+    names = list(slots) if slots else doc.slot_names(data)
+    for s in names:
+        base = _slot_base_color(data, s)
+        end = _scale_rgb(base, amount)
+        if alpha is not None:
+            end = end[:6] + f"{max(0, min(255, round(alpha * 255))):02x}"
+        set_keys(anim, "slot", s, "rgba", [
+            {"time": 0, "color": base, "curve": "easeOutQuad"},
+            {"time": duration, "color": end},
+        ], mode="replace")
+    return {"animation": name, "duration": duration, "slots": names, "loop": False}
+
+
+SLOT_PRESETS = {
+    "symbol_idle": symbol_idle,
+    "symbol_land": symbol_land,
+    "symbol_win": symbol_win,
+    "symbol_anticipation": symbol_anticipation,
+    "symbol_dim": symbol_dim,
+}
+
+
 PRESETS = {
     "idle": idle,
     "walk": walk,
