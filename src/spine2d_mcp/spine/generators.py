@@ -21,6 +21,7 @@ closely with few keys. On top of it:
 from __future__ import annotations
 
 import math
+import re
 from typing import Callable, Sequence
 
 from . import document as doc
@@ -599,15 +600,76 @@ def swap_draw_order(
 # impact. Every value is a parameter; keys stay editable in Spine.
 
 
+# Slot or attachment names that mark the reel-cell tile itself (background,
+# frame, cell, cell mask): the symbol presets must not move them, or the frame
+# leaves its cell in the reel grid. The tile word must be the FIRST word of the
+# name (fond, case_interieur, frame_gold...), so "texte_case_01" or a shine
+# mask ("eclat_masque" clipping) are not taken for the tile.
+_TILE_NAME = re.compile(
+    r"^(bg|background|backdrop|fond|frame|cadre|border|bord|tile|carreau|case|"
+    r"cell|panel)([_\-\s.\d]|$)", re.IGNORECASE)
+
+
+def tile_slots(data: dict) -> list[str]:
+    """Slots that draw the symbol's tile: slot or setup attachment named
+    bg / background / fond / frame / cadre / border / tile / case / cell...
+    (first word of the name)."""
+    return [s["name"] for s in doc.slots(data)
+            if _TILE_NAME.search(s["name"]) or _TILE_NAME.search(s.get("attachment") or "")]
+
+
+def _subtree_slots(data: dict, bone: str) -> list[str]:
+    tree = {bone, *doc.descendants(data, bone)}
+    return [s["name"] for s in doc.slots(data) if s["bone"] in tree]
+
+
+def _tile_warnings(data: dict, bone: str) -> list[str]:
+    moved = [s for s in tile_slots(data) if s in _subtree_slots(data, bone)]
+    if not moved:
+        return []
+    return [f"bone '{bone}' also moves the tile slots {moved} (background / frame / "
+            f"cell mask): the frame will leave its reel cell. Pass params.bone = the "
+            f"character bone instead."]
+
+
 def symbol_bone(data: dict, bone: str | None = None) -> str:
-    """`bone`, else the only direct child of root, else root."""
+    """`bone`; else the symbol container (the only child of root, followed
+    down through slot-less single-child bones, else root). When the container
+    also carries the tile (background / frame / cell mask, see tile_slots),
+    the tile-free child subtree that holds at least 2/3 of the other slots
+    (the character) is chosen; if none dominates, the container is kept and
+    the preset result carries a warning."""
     if bone:
         doc.find_bone(data, bone)
         return bone
-    bones = doc.bones(data)
-    root = bones[0]["name"]
-    children = [b["name"] for b in bones if b.get("parent") == root]
-    return children[0] if len(children) == 1 else root
+    root = doc.bones(data)[0]["name"]
+    children = doc.children_of(data, root)
+    if len(children) != 1:
+        return root
+    cur = children[0]
+    owned = {s["bone"] for s in doc.slots(data)}
+    while cur not in owned and len(doc.children_of(data, cur)) == 1:
+        cur = doc.children_of(data, cur)[0]
+    tiles = set(tile_slots(data))
+    if not tiles & set(_subtree_slots(data, cur)):
+        return children[0]  # no tile under the container: unchanged behaviour
+    # Pick the character: the tile-free child subtree holding most of the
+    # non-tile slots (>= 2/3). Several comparable subtrees (two characters,
+    # ornaments) stay ambiguous: keep the container, the preset warns.
+    sizes = {c: len(sl) for c in doc.children_of(data, cur)
+             if (sl := _subtree_slots(data, c)) and not tiles & set(sl)}
+    if not sizes:
+        return cur
+    best = max(sizes, key=sizes.get)
+    others = [s for s in _subtree_slots(data, cur) if s not in tiles]
+    return best if 3 * sizes[best] >= 2 * len(others) else cur
+
+
+def _with_warnings(data: dict, res: dict) -> dict:
+    w = _tile_warnings(data, res["bone"])
+    if w:
+        res["warnings"] = w
+    return res
 
 
 def _slot_base_color(data: dict, slot: str) -> str:
@@ -640,7 +702,7 @@ def symbol_idle(
     if sway:
         oscillate(data, name, b, "rotate", amplitude=sway, period=duration, duration=duration, phase=180)
         keyed.append(f"{b}.rotate")
-    return {"animation": name, "duration": duration, "bone": b, "keyed": keyed, "loop": True}
+    return _with_warnings(data, {"animation": name, "duration": duration, "bone": b, "keyed": keyed, "loop": True})
 
 
 def symbol_land(
@@ -671,8 +733,8 @@ def symbol_land(
     ]
     set_keys(anim, "bone", b, "translatey", ty, mode="replace")
     set_keys(anim, "bone", b, "scale", sc, mode="replace")
-    return {"animation": name, "duration": d, "bone": b, "impact_time": round(hit, 4),
-            "keyed": [f"{b}.translatey", f"{b}.scale"], "loop": False}
+    return _with_warnings(data, {"animation": name, "duration": d, "bone": b, "impact_time": round(hit, 4),
+            "keyed": [f"{b}.translatey", f"{b}.scale"], "loop": False})
 
 
 def symbol_win(
@@ -744,8 +806,8 @@ def symbol_win(
             {"time": 0.9 * d, "value": 0},
         ], mode="replace")
         keyed.append(f"{s}.alpha")
-    return {"animation": name, "duration": d, "bone": b, "pop_time": round(t_pop, 4),
-            "keyed": keyed, "loop": True}
+    return _with_warnings(data, {"animation": name, "duration": d, "bone": b, "pop_time": round(t_pop, 4),
+            "keyed": keyed, "loop": True})
 
 
 def symbol_anticipation(
@@ -767,8 +829,8 @@ def symbol_anticipation(
         oscillate(data, name, b, "scale", amplitude=swell / 2, period=duration / max(1, beats),
                   duration=duration, base=1 + swell / 2, phase=-90)
         keyed.append(f"{b}.scale")
-    return {"animation": name, "duration": duration, "bone": b, "tremble_hz": cycles / duration,
-            "keyed": keyed, "loop": True}
+    return _with_warnings(data, {"animation": name, "duration": duration, "bone": b, "tremble_hz": cycles / duration,
+            "keyed": keyed, "loop": True})
 
 
 def symbol_dim(

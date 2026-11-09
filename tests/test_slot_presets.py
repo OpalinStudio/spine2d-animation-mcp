@@ -121,3 +121,81 @@ def test_dark_slot_color_timelines_become_two_color(symbol, tmp_path):
     assert "rgba" in symbol["animations"]["dim"]["slots"]["glow"]  # no dark color: untouched
     assert any("dim/gem/rgba" in w for w in report.warnings)
     assert validate_data(symbol).ok
+
+
+@pytest.fixture
+def tile():
+    """Reel-cell symbol: background + clipping on the container, the
+    character on its own bone (synthetic, like a real tile rig)."""
+    return {
+        "skeleton": {"spine": "4.3.26", "images": "./images/"},
+        "bones": [
+            {"name": "root"}, {"name": "cell", "parent": "root"},
+            {"name": "center", "parent": "cell"},
+            {"name": "bg", "parent": "center"},
+            {"name": "prop", "parent": "center"},
+            {"name": "body", "parent": "center"},
+            {"name": "head", "parent": "body"},
+        ],
+        "slots": [
+            {"name": "bg", "bone": "bg", "attachment": "bg"},
+            {"name": "cell_mask", "bone": "center", "attachment": "cell_mask"},
+            {"name": "prop", "bone": "prop", "attachment": "prop"},
+            {"name": "body", "bone": "body", "attachment": "body"},
+            {"name": "head", "bone": "head", "attachment": "head"},
+        ],
+        "skins": [{"name": "default", "attachments": {
+            "bg": {"bg": {"width": 200, "height": 200}},
+            "cell_mask": {"cell_mask": {"type": "clipping", "end": "head",
+                                        "vertexCount": 4,
+                                        "vertices": [-90, -90, 90, -90, 90, 90, -90, 90]}},
+            "prop": {"prop": {"width": 30, "height": 40}},
+            "body": {"body": {"width": 100, "height": 80}},
+            "head": {"head": {"width": 60, "height": 60}},
+        }}],
+        "animations": {},
+    }
+
+
+def test_tile_slots_detects_background_and_cell_mask(tile):
+    assert set(gen.tile_slots(tile)) == {"bg", "cell_mask"}
+
+
+def test_tile_slots_ignore_non_leading_words_and_shine_masks(tile):
+    tile["slots"] += [
+        {"name": "label_case_01", "bone": "body"},
+        {"name": "shine_mask", "bone": "head"},
+    ]
+    tile["skins"][0]["attachments"]["shine_mask"] = {"shine_mask": {
+        "type": "clipping", "vertexCount": 3, "vertices": [0, 0, 10, 0, 0, 10]}}
+    assert set(gen.tile_slots(tile)) == {"bg", "cell_mask"}
+    assert gen.symbol_bone(tile) == "body"
+
+
+def test_symbol_bone_skips_the_tile_container(tile):
+    # The container (center) carries the background and the clipping mask:
+    # animating it would move the frame out of its reel cell.
+    assert gen.symbol_bone(tile) == "body"
+
+
+@pytest.mark.parametrize("preset", ["symbol_idle", "symbol_land", "symbol_win", "symbol_anticipation"])
+def test_symbol_presets_on_tile_keep_the_frame_still(tile, preset):
+    info = gen.SLOT_PRESETS[preset](tile)
+    assert info["bone"] == "body"
+    assert "warnings" not in info
+    keyed = set(tile["animations"][info["animation"]]["bones"])
+    assert keyed == {"body"}
+
+
+def test_explicit_container_bone_warns_about_tile_slots(tile):
+    info = gen.symbol_win(tile, bone="center")
+    assert info["bone"] == "center"
+    assert any("bg" in w and "cell_mask" in w for w in info["warnings"])
+
+
+def test_symbol_bone_keeps_container_when_two_characters_compete(tile):
+    tile["bones"].append({"name": "twin", "parent": "center"})
+    tile["slots"] += [{"name": "twin_body", "bone": "twin"}, {"name": "twin_head", "bone": "twin"}]
+    assert gen.symbol_bone(tile) == "center"
+    info = gen.symbol_idle(tile)
+    assert info["bone"] == "center" and info["warnings"]
