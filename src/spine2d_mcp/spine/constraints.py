@@ -14,6 +14,7 @@ Rigging helpers build complete setups from an existing skeleton:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Sequence
 
 from . import document as doc
@@ -309,23 +310,42 @@ def ik_for_chain(
     target_parent: str | None = None,
     constraint_name: str | None = None,
     bend_positive: bool = True,
+    orient_to_child: bool = False,
     **ik_kwargs: Any,
 ) -> dict:
-    """Create an IK target bone at the end of the chain + the constraint."""
+    """Create an IK target bone at the end of the chain + the constraint.
+
+    Spine solves IK for the TIP of the last bone, not for its child. When that
+    bone has no length the target goes on its first child and the result has
+    a `warnings` entry (2-bone IK would send the elbow to the target); with
+    orient_to_child=True the bone is first rotated and lengthened toward that
+    child (see `orient_bone_to_child`), so the tip is the wrist."""
     from .pose import Pose
 
     for b in bones:
         doc.find_bone(data, b)
     if len(bones) == 2 and doc.find_bone(data, bones[1]).get("parent") != bones[0]:
         raise ConstraintError("for 2-bone IK the second bone must be a child of the first")
+    warnings: list[str] = []
+    kids = [k for k in doc.children_of(data, bones[-1])]
+    if orient_to_child and kids and float(doc.find_bone(data, bones[-1]).get("length", 0)) <= 0:
+        warnings += orient_bone_to_child(data, bones[-1], kids[0])["warnings"]
     pose = Pose(data)
     last = pose.bones[bones[-1]]
-    kids = [k for k in doc.children_of(data, bones[-1])]
     if last.length > 0:
         tx, ty = last.tip
     elif kids:
         k = pose.bones[kids[0]]
         tx, ty = k.worldX, k.worldY
+        off = math.degrees(math.atan2(k.y, k.x)) if (k.x or k.y) else 0.0
+        if len(bones) == 2 or abs(off) > 0.5:
+            warnings.append(
+                f"bone {bones[-1]!r} has no length: the IK target is on its child {kids[0]!r}, "
+                "but Spine solves for the bone tip, so "
+                + ("the elbow will jump to the target (broken arm)" if len(bones) == 2
+                   else f"the setup pose will turn by {off:.1f} deg")
+                + "; pass orient_to_child=true to point the bone at its child first"
+            )
     else:
         raise ConstraintError(
             f"bone {bones[-1]!r} has no length and no child: can't place the IK target "
@@ -344,7 +364,108 @@ def ik_for_chain(
         **ik_kwargs,
     )
     doc.add_constraint(data, con)
-    return {"target_bone": target_name, "constraint": con}
+    return {"target_bone": target_name, "constraint": con, "warnings": warnings}
+
+
+def _rotate_pt(x: float, y: float, cos: float, sin: float) -> tuple[float, float]:
+    return x * cos - y * sin, x * sin + y * cos
+
+
+def orient_bone_to_child(data: dict, bone: str, child: str | None = None) -> dict:
+    """Point `bone` at `child` (rotation + length = distance) without moving
+    anything in the setup pose: children, region/point attachments, unweighted
+    vertices and weighted vertex entries of the bone are counter-rotated.
+
+    Needs a uniform scale and no shear on the bone (otherwise a local rotation
+    does not commute with the bone transform). Animations are not rewritten:
+    `warnings` lists the timelines whose values live in the bone's local space
+    (children translate, deform of its attachments) and constraints that read
+    the bone's rotation."""
+    b = doc.find_bone(data, bone)
+    kids = doc.children_of(data, bone)
+    child = child or (kids[0] if kids else None)
+    if child is None or child not in kids:
+        raise ConstraintError(f"bone {bone!r} has no child {child!r} to point at")
+    sx, sy = float(b.get("scaleX", 1)), float(b.get("scaleY", 1))
+    if abs(sx - sy) > 1e-6 or float(b.get("shearX", 0)) or float(b.get("shearY", 0)):
+        raise ConstraintError(
+            f"bone {bone!r} has a non-uniform scale or a shear: orient it by hand"
+        )
+    cb = doc.find_bone(data, child)
+    px, py = float(cb.get("x", 0)), float(cb.get("y", 0))
+    length = math.hypot(px, py)
+    if length < 1e-6:
+        raise ConstraintError(f"child {child!r} sits on the origin of {bone!r}: no direction")
+    r = math.degrees(math.atan2(py, px))
+    cos, sin = math.cos(math.radians(-r)), math.sin(math.radians(-r))
+
+    def num(v: float) -> float | int:
+        v = round(v, 4)
+        return int(v) if v == int(v) else v
+
+    b["rotation"] = num(float(b.get("rotation", 0)) + r)
+    b["length"] = num(length)
+    for k in kids:
+        kb = doc.find_bone(data, k)
+        x, y = _rotate_pt(float(kb.get("x", 0)), float(kb.get("y", 0)), cos, sin)
+        kb["x"], kb["y"] = num(x), num(y)
+        if kb.get("inherit", "normal") in ("normal", "noScale", "noScaleOrReflection"):
+            kb["rotation"] = num(float(kb.get("rotation", 0)) - r)
+        for f in ("x", "y", "rotation"):
+            if kb.get(f) == 0:
+                kb.pop(f)
+    slots = {s["name"] for s in doc.slots(data) if s["bone"] == bone}
+    bi = doc.bone_index(data, bone)
+    touched: list[tuple[str, str, str]] = []
+    for skin, slot, name, a in doc.iter_attachments(data):
+        verts = a.get("vertices")
+        vlen = doc._vertex_length(a)
+        if isinstance(verts, list) and vlen is not None and len(verts) != vlen:
+            i, hit = 0, False
+            while i < len(verts):
+                n = int(verts[i])
+                i += 1
+                for _ in range(n):
+                    if int(verts[i]) == bi:
+                        verts[i + 1], verts[i + 2] = (
+                            num(v) for v in _rotate_pt(verts[i + 1], verts[i + 2], cos, sin))
+                        hit = True
+                    i += 4
+            if hit:
+                touched.append((skin, slot, name))
+            continue
+        if slot not in slots:
+            continue
+        t = a.get("type", "region")
+        if t in ("region", "point"):
+            x, y = _rotate_pt(float(a.get("x", 0)), float(a.get("y", 0)), cos, sin)
+            a["x"], a["y"] = num(x), num(y)
+            a["rotation"] = num(float(a.get("rotation", 0)) - r)
+        elif isinstance(verts, list) and vlen is not None:
+            for i in range(0, len(verts), 2):
+                verts[i], verts[i + 1] = (num(v) for v in _rotate_pt(verts[i], verts[i + 1], cos, sin))
+            touched.append((skin, slot, name))
+    warnings: list[str] = []
+    for an, anim in doc.animations(data).items():
+        for k in kids:
+            for tl in (anim.get("bones") or {}).get(k) or {}:
+                if tl in ("translate", "translatex", "translatey"):
+                    warnings.append(f"animation {an!r}: {tl} keys of {k!r} are in {bone!r} space "
+                                    f"and now turn by {-r:.2f} deg; re-key them")
+        for tl in (anim.get("bones") or {}).get(bone) or {}:
+            if tl.startswith(("scale", "shear")):
+                warnings.append(f"animation {an!r}: {tl} keys of {bone!r} may no longer match "
+                                "after the reorientation; check them")
+        for skin, slot, name in touched:
+            if (((anim.get("attachments") or {}).get(skin) or {}).get(slot) or {}).get(name):
+                warnings.append(f"animation {an!r}: deform of {slot}/{name} is in {bone!r} space; "
+                                "re-key it")
+    for c in doc.constraints(data):
+        if c.get("type") != "ik" and (c.get("source") == bone or c.get("bone") == bone):
+            warnings.append(f"constraint {c['name']!r} reads {bone!r}: its rotation changed by "
+                            f"{r:.2f} deg; adjust the offsets")
+    return {"bone": bone, "child": child, "rotation_delta": num(r), "length": num(length),
+            "warnings": warnings}
 
 
 def physics_chain(
