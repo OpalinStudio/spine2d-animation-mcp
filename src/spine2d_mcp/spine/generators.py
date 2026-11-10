@@ -25,7 +25,8 @@ import re
 from typing import Callable, Sequence
 
 from . import document as doc
-from .animation import AnimationError, set_draw_order_keys, set_keys
+from . import format as fmt
+from .animation import AnimationError, sample, set_draw_order_keys, set_keys
 
 Fn = Callable[[float], float]
 
@@ -237,6 +238,257 @@ def _cycle(
 NAN = float("nan")
 
 
+# ------------------------------------------------------------ IK-aware rigs
+# An IK constraint at full mix overrides the rotation of its chain bones, so
+# FK rotate keys on a leg / arm driven by IK do nothing: the limb stays still
+# while the body moves. The presets therefore animate the IK TARGET of such a
+# chain (planted feet for walk / run, FK motion re-expressed on the target
+# everywhere else) and leave no dead rotate keys behind.
+
+
+def ik_constraint_of(data: dict, bone: str | None) -> dict | None:
+    """The IK constraint (mix > 0) whose chain contains `bone`."""
+    if bone is None:
+        return None
+    for c in data.get("constraints") or []:
+        if c.get("type") == "ik" and bone in (c.get("bones") or []) and float(c.get("mix", 1)) > 0:
+            return c
+    return None
+
+
+def _chain_geometry(data: dict, con: dict) -> tuple[float, float]:
+    """(max reach, setup distance) from the chain's first joint to its IK
+    target, in world units."""
+    from .pose import Pose
+
+    pose = Pose(data)
+    first, target = pose.bones[con["bones"][0]], pose.bones[con["target"]]
+    reach = 0.0
+    for b in con["bones"]:
+        bn = pose.bones[b]
+        reach += math.hypot(*(p - q for p, q in zip(bn.tip, (bn.worldX, bn.worldY))))
+    return reach, math.hypot(target.worldX - first.worldX, target.worldY - first.worldY)
+
+
+def _world_to_parent_offset(data: dict, bone: str, dx: float, dy: float) -> tuple[float, float]:
+    """A world-space displacement expressed as a translate offset of `bone`
+    (translate timelines are in the parent bone's space)."""
+    from .pose import Pose
+
+    parent = doc.find_bone(data, bone).get("parent")
+    if parent is None:
+        return dx, dy
+    p = Pose(data).bones[parent]
+    det = p.a * p.d - p.b * p.c
+    if abs(det) < 1e-12:
+        return dx, dy
+    return (dx * p.d - dy * p.b) / det, (dy * p.a - dx * p.c) / det
+
+
+def _hermite_track(
+    knots: Sequence[tuple[float, float, float, float, float]], period: float, phase: float,
+) -> list[dict]:
+    """Looping two-value (x, y) keys from cubic Hermite knots.
+
+    knots: (u, x, y, dx/du, dy/du) with u ascending in [0, 1); the cycle
+    wraps from the last knot back to the first. `phase` (0..1) shifts the
+    cycle in time; the segment that crosses the loop point is split there so
+    the keys run from 0 to `period` and the loop is seamless."""
+    n = len(knots)
+    pieces: list[tuple[float, float, tuple, tuple]] = []  # (t0, t1, start, end) in cycle units
+    for i, k in enumerate(knots):
+        nxt = knots[(i + 1) % n]
+        u0, u1 = k[0], nxt[0] + (1.0 if i == n - 1 else 0.0)
+        pieces.append((u0 + phase, u1 + phase, k[1:], nxt[1:]))
+
+    def at(piece, t: float) -> tuple:
+        t0, t1, (x0, y0, mx0, my0), (x1, y1, mx1, my1) = piece
+        h = t1 - t0
+        s = (t - t0) / h
+        h00, h10 = 2 * s**3 - 3 * s**2 + 1, s**3 - 2 * s**2 + s
+        h01, h11 = -2 * s**3 + 3 * s**2, s**3 - s**2
+        d00, d10 = 6 * s**2 - 6 * s, 3 * s**2 - 4 * s + 1
+        d01, d11 = -6 * s**2 + 6 * s, 3 * s**2 - 2 * s
+        return (
+            h00 * x0 + h10 * h * mx0 + h01 * x1 + h11 * h * mx1,
+            h00 * y0 + h10 * h * my0 + h01 * y1 + h11 * h * my1,
+            (d00 * x0 + d01 * x1) / h + d10 * mx0 + d11 * mx1,
+            (d00 * y0 + d01 * y1) / h + d10 * my0 + d11 * my1,
+        )
+
+    segments: list[tuple[float, float, tuple, tuple]] = []
+    for piece in pieces:
+        t0, t1 = piece[0], piece[1]
+        k = math.floor(t0 + 1e-9)
+        t0, t1 = t0 - k, t1 - k
+        shifted = (t0, t1, piece[2], piece[3])
+        if t1 > 1 + 1e-9:
+            mid = at(shifted, 1.0)
+            segments.append((t0, 1.0, piece[2], mid))
+            segments.append((0.0, t1 - 1.0, mid, piece[3]))
+        else:
+            segments.append(shifted)
+    segments.sort(key=lambda s: s[0])
+    keys: list[dict] = []
+    for t0, t1, (x0, y0, mx0, my0), (x1, y1, mx1, my1) in segments:
+        a, b = t0 * period, t1 * period
+        third = (t1 - t0) / 3
+        keys.append({"time": _r(a), "x": _r(x0), "y": _r(y0), "curve": {"raw": [
+            _r(a + (b - a) / 3), _r(x0 + mx0 * third), _r(b - (b - a) / 3), _r(x1 - mx1 * third),
+            _r(a + (b - a) / 3), _r(y0 + my0 * third), _r(b - (b - a) / 3), _r(y1 - my1 * third),
+        ]}})
+    last = segments[-1]
+    keys.append({"time": _r(period), "x": _r(last[3][0]), "y": _r(last[3][1])})
+    return keys
+
+
+def _planted_feet(
+    data: dict, name: str, legs: dict[str, dict], duration: float, stride: float,
+    bob: float, step_height: float | None, stance: float, facing: int, hip: str | None,
+) -> dict:
+    """Walk / run feet on IK targets: during the stance the foot slides back
+    at constant speed (the ground speed, so it does not skate when the game
+    moves the character at `ground_speed`), then lifts and swings forward on
+    an arc. The hip is lowered just enough for the legs to reach both
+    extremes, so the knees bend instead of the feet leaving their targets."""
+    from .pose import Pose
+
+    anim = doc.animations(data)[name]
+    reach, rest = min(_chain_geometry(data, c) for c in legs.values())
+    # A planted foot reaches out at most a 30 deg leg angle: beyond that the
+    # hip would have to sink into a crouch (a run covers the rest in the air).
+    half = reach * math.sin(math.radians(min(abs(stride), 30.0)))
+    lift = 0.12 * reach if step_height is None else step_height
+    speed = 2 * half / stance  # per cycle unit, backwards during the stance
+    swing = 1 - stance
+    paths: list[tuple[dict, list[dict]]] = []  # (constraint, world-space foot path)
+    for side, con in legs.items():
+        d = facing
+        knots = [
+            (0.0, d * half, 0.0, -d * speed, 0.0),                       # contact, foot in front
+            (stance, -d * half, 0.0, -d * speed, 0.0),                    # toe-off
+            (stance + swing / 2, 0.0, lift, d * 3 * half / swing, 0.0),   # passing, highest
+        ]
+        world = _hermite_track(knots, duration, 0.25 if side == "left" else 0.75)
+        paths.append((con, [{**k, "curve": k["curve"]["raw"]} if "curve" in k else k for k in world]))
+        local = []
+        for k in world:
+            k = dict(k)
+            k["x"], k["y"] = (_r(v) for v in _world_to_parent_offset(data, con["target"], k["x"], k["y"]))
+            if "curve" in k:
+                raw = list(k["curve"]["raw"])
+                x1, y1 = _world_to_parent_offset(data, con["target"], raw[1], raw[5])
+                x2, y2 = _world_to_parent_offset(data, con["target"], raw[3], raw[7])
+                raw[1], raw[5], raw[3], raw[7] = _r(x1), _r(y1), _r(x2), _r(y2)
+                k["curve"] = {"raw": raw}
+            local.append(k)
+        set_keys(anim, "bone", con["target"], "translate", local, mode="replace")
+    out = {"targets": sorted(c["target"] for c in legs.values()), "step_length": _r(2 * half),
+           "ground_speed": _r(2 * half / (stance * duration))}
+    if hip:
+        limit = 0.995 * reach
+        amp = max(0.0, min(bob, (limit - math.sqrt(max(limit**2 - half**2, 0.0))) / 2))
+        # Lowest hip offset needed over the whole cycle for both legs to reach
+        # their target (the hip bobs as amp * cos, twice per cycle).
+        setup = Pose(data)
+        base = 0.0
+        for con, path in paths:
+            joint, target = setup.bones[con["bones"][0]], setup.bones[con["target"]]
+            for i in range(97):
+                t = duration * i / 96
+                ox, oy = sample(fmt.BONE_TIMELINES["translate"], path, t)
+                dx = target.worldX + ox - joint.worldX
+                room = math.sqrt(max(limit**2 - dx**2, 0.0)) - (joint.worldY - target.worldY - oy)
+                base = min(base, room - amp * math.cos(4 * math.pi * t / duration))
+        oscillate(data, name, hip, "translatey", amplitude=amp, period=duration / 2,
+                  duration=duration, phase=90, base=base, mode="replace")
+        out["hip_drop"] = _r(-base)
+    return out
+
+
+def retarget_fk_to_ik(data: dict, name: str, skip: Sequence[str] = ()) -> list[str]:
+    """Re-express FK rotate keys of IK-driven chains on their IK target.
+
+    For every IK constraint (mix > 0, not in `skip`) whose chain bones carry
+    rotate keys in animation `name`: the keyed (FK) pose is sampled, the
+    position the target would have if it followed the chain is keyed on the
+    target's translate timeline (smooth bezier keys), and the dead rotate keys
+    are removed. Returns the target bones that were keyed."""
+    from .pose import Pose
+
+    anim = doc.animations(data)[name]
+    setup = Pose(data)
+    done: list[str] = []
+    for con in data.get("constraints") or []:
+        if con.get("type") != "ik" or con.get("name") in skip or float(con.get("mix", 1)) <= 0:
+            continue
+        chain, target = con["bones"], con["target"]
+        tracks = [(anim.get("bones") or {}).get(b, {}).get("rotate") for b in chain]
+        if not any(tracks) or (anim.get("bones") or {}).get(target, {}).get("translate"):
+            continue
+        times = sorted({round(float(k.get("time", 0)), 6) for keys in tracks if keys for k in keys})
+        if len(times) < 2:
+            times = [0.0, max(times[0] if times else 0.0, 1e-3)]
+        dense = sorted({*times, *((a + b) / 2 for a, b in zip(times, times[1:]))})
+        t_setup = setup.bones[target]
+        local = setup.bones[chain[-1]].world_to_local(t_setup.worldX, t_setup.worldY)
+        parent = doc.find_bone(data, target).get("parent")
+        tb = doc.find_bone(data, target)
+
+        cache: dict[float, tuple[float, float]] = {}
+
+        def offset(t: float) -> tuple[float, float]:
+            t = min(max(t, dense[0]), dense[-1])
+            if t not in cache:
+                pose = Pose(data, name, t)
+                wx, wy = pose.bones[chain[-1]].local_to_world(*local)
+                if parent is not None:
+                    wx, wy = pose.bones[parent].world_to_local(wx, wy)
+                cache[t] = (wx - float(tb.get("x", 0)), wy - float(tb.get("y", 0)))
+            return cache[t]
+
+        h = 1e-3
+
+        def slope(t: float, i: int) -> float:
+            a, b = max(t - h, dense[0]), min(t + h, dense[-1])
+            return (offset(b)[i] - offset(a)[i]) / (b - a)
+
+        keys = function_keys_xy(lambda t: offset(t)[0], lambda t: slope(t, 0),
+                                lambda t: offset(t)[1], lambda t: slope(t, 1), dense)
+        for b in chain:
+            (anim.get("bones") or {}).get(b, {}).pop("rotate", None)
+            if b in (anim.get("bones") or {}) and not anim["bones"][b]:
+                del anim["bones"][b]
+        set_keys(anim, "bone", target, "translate", keys, mode="replace")
+        done.append(target)
+    return done
+
+
+def _ik_legs(data: dict, roles: dict[str, str]) -> dict[str, dict]:
+    """side -> IK constraint for the legs driven by IK."""
+    out = {}
+    for side in ("left", "right"):
+        for role in (f"leg_{side}", f"shin_{side}", f"foot_{side}"):
+            con = ik_constraint_of(data, roles.get(role))
+            if con:
+                out[side] = con
+                break
+    return out
+
+
+def _finish(data: dict, name: str, res: dict, skip: Sequence[str] = ()) -> dict:
+    moved = retarget_fk_to_ik(data, name, skip)
+    if moved:
+        res["ik_targets_keyed"] = sorted({*res.get("ik_targets_keyed", []), *moved})
+        res["keyed"] = [k for k in res.get("keyed", []) if _still_keyed(data, name, k)]
+    return res
+
+
+def _still_keyed(data: dict, name: str, entry: str) -> bool:
+    bone, _, tl = entry.rpartition(".")
+    return tl in ((doc.animations(data)[name].get("bones") or {}).get(bone) or {})
+
+
 def idle(
     data: dict, name: str = "idle", duration: float = 2.0, intensity: float = 1.0,
     roles: dict[str, str] | None = None, mode: str = "replace",
@@ -245,6 +497,8 @@ def idle(
     r = resolve_roles(data, roles)
     _anim(data, name, mode)
     i = intensity
+    # Planted feet (IK legs): breathe downwards only, so the legs never overstretch.
+    hip_base = -1.5 * i if _ik_legs(data, r) else NAN
     plan = [
         ("torso", "scaley", 0.015 * i, 0, 1, NAN),
         ("chest", "scaley", 0.025 * i, -30, 1, NAN),
@@ -255,23 +509,33 @@ def idle(
         ("arm_right", "rotate", -2.0 * i, -90, 1, NAN),
         ("hand_left", "rotate", 3.0 * i, -130, 1, NAN),
         ("hand_right", "rotate", -3.0 * i, -130, 1, NAN),
-        ("hip", "translatey", 1.5 * i, 90, 1, NAN),
+        ("hip", "translatey", 1.5 * i, 90, 1, hip_base),
         ("tail", "rotate", 4.0 * i, -100, 1, NAN),
     ]
     used = _cycle(data, name, plan, duration, duration, r)
-    return {"animation": name, "duration": duration, "keyed": used, "roles": r}
+    return _finish(data, name, {"animation": name, "duration": duration, "keyed": used, "roles": r})
 
 
 def walk(
     data: dict, name: str = "walk", duration: float = 1.0, stride: float = 25.0,
     arm_swing: float = 20.0, bob: float = 6.0, lean: float = 0.0,
     roles: dict[str, str] | None = None, mode: str = "replace", run: bool = False,
+    step_height: float | None = None, stance: float | None = None, facing: int = 1,
 ) -> dict:
     """Walk (or run) cycle: legs swing in opposition, knees/feet follow, arms
-    counter-swing, hips bob twice per cycle, optional forward lean."""
+    counter-swing, hips bob twice per cycle, optional forward lean.
+
+    Legs driven by an IK constraint get planted feet instead of FK swings:
+    the IK targets are keyed (constant-speed stance, lifted swing of
+    `step_height`, `stance` = fraction of the cycle on the ground, default
+    0.55 walk / 0.4 run), the hip is lowered so the knees bend, and the result
+    reports `ground_speed` (units/s to move the character at so the feet do
+    not skate). The foot reaches out by the `stride` leg angle, at most 30
+    deg. facing: 1 = the character looks toward +x, -1 toward -x."""
     r = resolve_roles(data, roles)
     _anim(data, name, mode)
     s, a = stride, arm_swing
+    legs = _ik_legs(data, r)
     plan = [
         ("leg_left", "rotate", s, 0, 1, NAN),
         ("leg_right", "rotate", -s, 0, 1, NAN),
@@ -290,8 +554,18 @@ def walk(
         ("head", "rotate", -1.5, 60, 2, -lean * 0.5),
         ("tail", "rotate", 8.0, -90, 2, NAN),
     ]
+    # FK keys on an IK-driven leg would be dead: the feet are keyed below.
+    dead = {b for con in legs.values() for b in con["bones"]}
+    plan = [p for p in plan if r.get(p[0]) not in dead]
     used = _cycle(data, name, plan, duration, duration, r)
-    return {"animation": name, "duration": duration, "keyed": used, "roles": r}
+    res: dict = {"animation": name, "duration": duration, "keyed": used, "roles": r}
+    if legs:
+        res["planted_feet"] = _planted_feet(
+            data, name, legs, duration, stride, bob, step_height,
+            stance if stance is not None else (0.4 if run else 0.55), 1 if facing >= 0 else -1,
+            r.get("hip"))
+        res["ik_targets_keyed"] = res["planted_feet"].pop("targets")
+    return _finish(data, name, res, skip=[c["name"] for c in legs.values()])
 
 
 def run(data: dict, name: str = "run", duration: float = 0.6, **kw) -> dict:
@@ -302,12 +576,36 @@ def run(data: dict, name: str = "run", duration: float = 0.6, **kw) -> dict:
     return walk(data, name, duration, run=True, **kw)
 
 
+def squash_scale(data: dict, bone: str, wide: float, tall: float) -> dict:
+    """Scale key fields for a squash & stretch meant in SCREEN axes (`wide` =
+    horizontal, `tall` = vertical). Bone scale is in the bone's own axes, so
+    for a bone pointing up or down (a hip / spine bone at 90 deg) the two are
+    swapped: scale x runs along the bone."""
+    from .pose import Pose
+
+    rot = math.radians(Pose(data).bones[bone].world_rotation)
+    if abs(math.sin(rot)) > abs(math.cos(rot)):
+        return {"x": tall, "y": wide}
+    return {"x": wide, "y": tall}
+
+
+def _screen_scale_keys(data: dict, bone: str, keys: list[dict]) -> list[dict]:
+    """Scale keys written with x = horizontal, y = vertical -> the bone's axes."""
+    if squash_scale(data, bone, 0, 1)["x"] == 1:
+        for k in keys:
+            k["x"], k["y"] = k["y"], k["x"]
+    return keys
+
+
 def jump(
     data: dict, name: str = "jump", duration: float = 1.2, height: float = 150.0,
     squash: float = 0.15, roles: dict[str, str] | None = None, mode: str = "replace",
 ) -> dict:
     """Anticipation squash -> takeoff stretch -> apex -> landing squash ->
-    settle. Volume-preserving squash/stretch on the hip (scale x = 1/y)."""
+    settle. Volume-preserving squash/stretch on the hip (wide = 1/tall, in
+    screen axes whatever the hip bone's orientation). IK legs: the feet stay
+    planted while the body squats (knees bend), leave the ground at takeoff,
+    tuck at the apex and land before the body does."""
     r = resolve_roles(data, roles)
     anim = _anim(data, name, mode)
     hip = r.get("hip") or r.get("torso") or r.get("root")
@@ -325,15 +623,19 @@ def jump(
         {"time": T, "value": 0},
     ], mode="replace")
     sq, st = 1 - squash, 1 + squash
-    set_keys(anim, "bone", hip, "scale", [
-        {"time": 0, "x": 1, "y": 1, "curve": "easeOut"},
-        {"time": t_ant, "x": 1 / sq, "y": sq, "curve": "easeOut"},
-        {"time": t_off, "x": 1 / st, "y": st, "curve": "easeInOut"},
-        {"time": t_apex, "x": 1, "y": 1, "curve": "easeIn"},
-        {"time": t_land, "x": 1 / sq, "y": sq, "curve": "easeOutBack"},
-        {"time": T, "x": 1, "y": 1},
+    legs = _ik_legs(data, r)
+    # IK legs fold by themselves when the hip drops: squash the upper body
+    # only, or scaling the hip would resize the legs and lift the feet.
+    body = r.get("torso") if legs and r.get("torso") else hip
+    set_keys(anim, "bone", body, "scale", [
+        {"time": 0, **squash_scale(data, body, 1, 1), "curve": "easeOut"},
+        {"time": t_ant, **squash_scale(data, body, 1 / sq, sq), "curve": "easeOut"},
+        {"time": t_off, **squash_scale(data, body, 1 / st, st), "curve": "easeInOut"},
+        {"time": t_apex, **squash_scale(data, body, 1, 1), "curve": "easeIn"},
+        {"time": t_land, **squash_scale(data, body, 1 / sq, sq), "curve": "easeOutBack"},
+        {"time": T, **squash_scale(data, body, 1, 1)},
     ], mode="replace")
-    used = [f"{hip}.translatey", f"{hip}.scale"]
+    used = [f"{hip}.translatey", f"{body}.scale"]
     for role, amp in (("arm_left", -60), ("arm_right", 60)):
         b = r.get(role)
         if b:
@@ -345,9 +647,25 @@ def jump(
                 {"time": T, "value": 0},
             ], mode="replace")
             used.append(f"{b}.rotate")
+    res: dict = {"animation": name, "duration": T, "keyed": used, "roles": r}
+    for side, con in legs.items():
+        reach, rest = _chain_geometry(data, con)
+        slack = max(0.0, reach - rest)  # how far the hip can rise before the foot lifts
+        tuck = 0.12 * reach * (1.0 if side == "left" else 0.7)
+        keys = []
+        for t, y, curve in (
+            (0, 0.0, None), (t_ant, 0.0, None),
+            (t_off, max(0.0, height * 0.2 - slack), "easeOutQuad"),
+            (t_apex, height - slack + tuck, "easeInQuad"), (t_land, 0.0, None), (T, 0.0, None),
+        ):
+            ox, oy = _world_to_parent_offset(data, con["target"], 0.0, y)
+            keys.append({"time": t, "x": ox, "y": oy, **({"curve": curve} if curve else {})})
+        set_keys(anim, "bone", con["target"], "translate", keys, mode="replace")
+        res.setdefault("ik_targets_keyed", []).append(con["target"])
+    dead = {b for con in legs.values() for b in con["bones"]}
     for role, amp in (("leg_left", 20), ("leg_right", -15)):
         b = r.get(role)
-        if b:
+        if b and b not in dead:
             set_keys(anim, "bone", b, "rotate", [
                 {"time": 0, "value": 0},
                 {"time": t_off, "value": 0, "curve": "easeOut"},
@@ -355,7 +673,7 @@ def jump(
                 {"time": t_land, "value": 0},
             ], mode="replace")
             used.append(f"{b}.rotate")
-    return {"animation": name, "duration": T, "keyed": used, "roles": r}
+    return _finish(data, name, res, skip=[c["name"] for c in legs.values()])
 
 
 def wave(
@@ -387,7 +705,7 @@ def wave(
         oscillate(data, name, lower, "rotate", amplitude=25, period=(0.6 * T) / waves,
                   duration=0.6 * T, phase=0, start=0.2 * T)
         used.append(f"{lower}.rotate")
-    return {"animation": name, "duration": T, "keyed": used, "roles": r}
+    return _finish(data, name, {"animation": name, "duration": T, "keyed": used, "roles": r})
 
 
 def head_motion(
@@ -499,7 +817,7 @@ def bounce(
     ty.append({"time": duration, "value": 0})
     sc.append({"time": duration, "x": 1 / (1 - squash), "y": 1 - squash})
     set_keys(anim, "bone", bone, "translatey", ty, mode="replace")
-    set_keys(anim, "bone", bone, "scale", sc, mode="replace")
+    set_keys(anim, "bone", bone, "scale", _screen_scale_keys(data, bone, sc), mode="replace")
     return {"animation": name, "duration": duration, "keyed": [f"{bone}.translatey", f"{bone}.scale"]}
 
 
@@ -732,7 +1050,7 @@ def symbol_land(
         {"time": d, "x": 1, "y": 1},
     ]
     set_keys(anim, "bone", b, "translatey", ty, mode="replace")
-    set_keys(anim, "bone", b, "scale", sc, mode="replace")
+    set_keys(anim, "bone", b, "scale", _screen_scale_keys(data, b, sc), mode="replace")
     return _with_warnings(data, {"animation": name, "duration": d, "bone": b, "impact_time": round(hit, 4),
             "keyed": [f"{b}.translatey", f"{b}.scale"], "loop": False})
 
@@ -781,7 +1099,7 @@ def symbol_win(
         {"time": 0.66 * d, "value": hop * 0.3, "curve": "easeInOutSine"},
         {"time": d, "value": 0},
     ]
-    set_keys(anim, "bone", b, "scale", sc, mode="replace")
+    set_keys(anim, "bone", b, "scale", _screen_scale_keys(data, b, sc), mode="replace")
     set_keys(anim, "bone", b, "rotate", rot, mode="replace")
     keyed = [f"{b}.scale", f"{b}.rotate"]
     if hop:

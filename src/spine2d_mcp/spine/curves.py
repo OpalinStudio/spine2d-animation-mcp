@@ -164,3 +164,39 @@ def bezier_value(
 def _cubic(s: float, p0: float, p1: float, p2: float, p3: float) -> float:
     u = 1.0 - s
     return u * u * u * p0 + 3 * u * u * s * p1 + 3 * u * s * s * p2 + s * s * s * p3
+
+
+def split_bezier(
+    time: float,
+    t1: float,
+    v1: float,
+    cx1: float,
+    cy1: float,
+    cx2: float,
+    cy2: float,
+    t2: float,
+    v2: float,
+) -> tuple[float, list[float], list[float]]:
+    """Cut a Spine absolute bezier segment at `time` without changing its
+    shape: (value at time, left [cx1, cy1, cx2, cy2], right [cx1, cy1, cx2,
+    cy2]) (de Casteljau)."""
+    lo, hi = 0.0, 1.0
+    s = (time - t1) / (t2 - t1)
+    for _ in range(50):
+        x = _cubic(s, t1, cx1, cx2, t2)
+        if abs(x - time) < 1e-9:
+            break
+        if x < time:
+            lo = s
+        else:
+            hi = s
+        s = (lo + hi) / 2.0
+
+    def cut(p0: float, p1: float, p2: float, p3: float) -> tuple[float, float, float, float, float]:
+        a, b, c = p0 + (p1 - p0) * s, p1 + (p2 - p1) * s, p2 + (p3 - p2) * s
+        d, e = a + (b - a) * s, b + (c - b) * s
+        return a, d, d + (e - d) * s, e, c
+
+    xa, xd, _, xe, xc = cut(t1, cx1, cx2, t2)
+    ya, yd, ym, ye, yc = cut(v1, cy1, cy2, v2)
+    return ym, [xa, ya, xd, yd], [xe, ye, xc, yc]

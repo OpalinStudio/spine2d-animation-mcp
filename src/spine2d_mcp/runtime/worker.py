@@ -128,6 +128,12 @@ def _parse_color(c):
 def _times(req: dict, info: dict) -> tuple[list[float], float]:
     fps = float(req.get("fps") or 30)
     anim = req.get("animation")
+    if req.get("times"):
+        # Explicit capture times (key poses), played in order.
+        times = sorted(float(t) for t in req["times"])
+        if times[0] < 0 or len(times) > MAX_FRAMES:
+            raise ValueError(f"times must be >= 0 and at most {MAX_FRAMES}")
+        return times, fps
     if req.get("time") is not None or not anim:
         return [float(req.get("time") or 0.0)], fps
     dur = req.get("duration")
@@ -255,7 +261,7 @@ def handle(req: dict) -> dict:
                 "skeleton": fs_url(skeleton), "atlas": fs_url(atlas), "binary": binary,
                 "dataScale": req.get("data_scale") or 1, "skin": req.get("skin"),
                 "animation": req.get("animation"), "loop": req.get("loop", True),
-                "overlays": req.get("overlays") or [],
+                "overlays": req.get("overlays") or [], "mix": float(req.get("mix") or 0),
             })
             res["runtime_version"] = req.get("runtime_version")
             if logs:
@@ -264,6 +270,12 @@ def handle(req: dict) -> dict:
                 return res
             times, fps = _times(req, res["info"])
             warmup = float(req.get("warmup") or 0)
+            if req.get("mode") == "sample":
+                res["samples"] = page.evaluate(
+                    "a => window.spineMcp.sample(a[0], a[1], a[2], a[3])",
+                    [times, fps, warmup, req.get("track") or ["*"]])
+                res.update(times=times, fps=fps)
+                return res
             bounds = req.get("crop")
             if not bounds:
                 bounds = page.evaluate("a => window.spineMcp.measure(a[0], a[1], a[2])", [times, fps, warmup])
@@ -274,7 +286,8 @@ def handle(req: dict) -> dict:
             out_dir = Path(req["out_dir"])
             out_dir.mkdir(parents=True, exist_ok=True)
             prefix = req.get("prefix", "frame_")
-            page.evaluate("a => window.spineMcp.begin(a[0], a[1], a[2], a[3])", [times, fps, warmup, view])
+            page.evaluate("a => window.spineMcp.begin(a[0], a[1], a[2], a[3], a[4])",
+                          [times, fps, warmup, view, {"track": req.get("track"), "debug": req.get("debug")}])
             # Frames per round trip: ~8 MB of PNG data at most.
             batch = max(1, min(16, int(8e6 / max(1, view["outW"] * view["outH"]))))
             frames: list[str] = []
@@ -287,6 +300,7 @@ def handle(req: dict) -> dict:
                     _save_frame(u, view, path)
                     frames.append(str(path))
             res.update(bounds=bounds, view=view, times=times, fps=fps, frames=frames)
+            res["samples"] = page.evaluate("() => window.spineMcp.finish()")
             if logs:
                 res["console"] = logs[-20:]
             return res

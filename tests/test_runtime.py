@@ -168,3 +168,109 @@ def test_runtime_render_formats(runtime_ok, rig, tmp_path, fmt):
     if fmt == "png":
         alpha = Image.open(out).getchannel("A")
         assert alpha.getextrema() == (0, 255)  # transparent around, opaque art
+
+
+# ------------------------------------------------- motion, review renders
+@pytest.fixture
+def walker(make_psd, tmp_path):
+    """Humanoid with knees on IK legs, a planted walk and a footstep event."""
+    from spine2d_mcp.pipeline import import_psd_to_spine
+    from spine2d_mcp.spine import animation as an
+    from spine2d_mcp.spine import document as doc
+
+    res = import_psd_to_spine(make_psd([
+        ("head", 160, 20, 80, 80), ("body", 150, 110, 100, 180),
+        ("leg_left", 150, 300, 45, 95), ("shin_left", 150, 395, 45, 90), ("foot_left", 150, 480, 70, 28),
+        ("leg_right", 205, 300, 45, 95), ("shin_right", 205, 395, 45, 90), ("foot_right", 205, 480, 70, 28),
+    ]), str(tmp_path / "walker"), ik_legs=True, animations=["walk"], export_images=True)
+    data = doc.load(res.project_path)
+    doc.set_event(data, "footstep")
+    an.set_event_keys(data["animations"]["walk"], [{"time": 0.25, "name": "footstep"}])
+    an.set_keys(data["animations"].setdefault("low", {}), "bone", "head", "rotate", [{"value": 0}, {"time": 1, "value": 0}])
+    an.set_keys(data["animations"].setdefault("high", {}), "bone", "head", "rotate", [{"value": 40}, {"time": 1, "value": 40}])
+    doc.save(data, res.project_path)
+    return str(res.project_path)
+
+
+def test_walk_on_ik_legs_really_moves_them_in_the_runtime(runtime_ok, walker):
+    s = rr.sample(walker, "walk", bones=["leg_left", "shin_left", "shin_left-ik-target"], fps=20)
+    assert s["times"][0] == 0 and s["times"][-1] == pytest.approx(1.0) and len(s["times"]) == 21
+    thigh, shin = s["tracks"]["leg_left"]["rotation"], s["tracks"]["shin_left"]["rotation"]
+    assert max(thigh) - min(thigh) > 30  # the IK solver swings the leg after its target
+    assert max(a - b for a, b in zip(thigh, shin)) > 20  # ...and the knee folds forward
+    target = s["tracks"]["shin_left-ik-target"]
+    stance = [y for t, y in zip(s["times"], target["y"]) if 0.25 <= t <= 0.8]
+    assert max(stance) - min(stance) < 0.01
+    assert s["events"] == [{"time": 0.25, "name": "footstep", "track": 0, "animation": "walk"}]
+
+
+def test_track_zero_overlay_crossfades_with_mix(runtime_ok, walker):
+    def head(mix):
+        s = rr.sample(walker, "low", bones=["head"], times=[0.4, 0.6, 0.9], loop=True,
+                      overlays=[{"track": 0, "animation": "high", "start": 0.5, "loop": True, "mix": mix}])
+        return [r - s["tracks"]["head"]["rotation"][0] for r in s["tracks"]["head"]["rotation"]]
+
+    assert head(0) == pytest.approx([0, 40, 40], abs=0.01)  # a cut
+    _, mid, end = head(0.2)
+    assert 10 < mid < 30 and end == pytest.approx(40, abs=0.01)  # halfway through the crossfade
+
+
+def test_onion_render_with_bone_trails_and_preview(runtime_ok, walker, tmp_path):
+    from PIL import Image
+
+    out, preview = tmp_path / "walk_onion.png", tmp_path / "preview.jpg"
+    res = rr.render(walker, str(out), format="onion", animation="walk", fps=10, width=300,
+                    track_bones=["head", "shin_left-ik-target"], background="#202020",
+                    preview=str(preview))
+    assert res["frames"] == 10 and list(res["tracks"]) == ["head", "shin_left-ik-target"]
+    assert len(res["tracks"]["head"]["x"]) == 10 and res["events"][0]["name"] == "footstep"
+    with Image.open(out) as im:
+        assert im.size == tuple(res["size"])
+        colors = {c for _, c in im.convert("RGB").getcolors(1 << 20)}
+        assert (255, 64, 129) in colors and (0, 229, 255) in colors  # one trail color per bone
+    with Image.open(preview) as im:
+        assert im.format == "JPEG" and max(im.size) <= 1568
+
+
+def test_debug_overlay_draws_the_bones(runtime_ok, walker, tmp_path):
+    from PIL import Image, ImageChops
+
+    plain = rr.render(walker, str(tmp_path / "plain.png"), format="png", width=300)
+    debug = rr.render(walker, str(tmp_path / "debug.png"), format="png", width=300, debug=True)
+    assert plain["size"] == debug["size"]
+    a, b = (Image.open(tmp_path / n).convert("RGB") for n in ("plain.png", "debug.png"))
+    diff = ImageChops.difference(a, b)
+    assert diff.getbbox() is not None
+    assert (255, 0, 0) in {c for _, c in b.getcolors(1 << 20)}  # bone lines
+
+
+def test_runtime_render_tool_returns_the_picture(runtime_ok, walker, tmp_path):
+    import asyncio
+
+    from PIL import Image
+
+    from spine2d_mcp.tools import mcp
+
+    content = asyncio.run(mcp.call_tool("runtime_render", {
+        "skeleton": walker, "output": str(tmp_path / "walk.gif"), "animation": "walk",
+        "fps": 10, "width": 120}))
+    report, picture = content
+    info = json.loads(report.text)
+    assert info["format"] == "gif" and info["frames"] == 10 and "preview" not in info
+    assert picture.type == "image" and picture.mimeType == "image/jpeg"
+    with Image.open(io.BytesIO(base64.b64decode(picture.data))) as im:
+        assert im.size == (6 * 120, 2 * info["size"][1])  # a contact sheet of the 10 frames
+
+
+def test_analyze_animation_tool_merges_keys_and_runtime_review(runtime_ok, walker):
+    from spine2d_mcp.tools import quality
+
+    rep = quality.analyze_animation(walker, "walk", ground_bones=["shin_left-ik-target"])
+    assert rep["loop"]["assumed"] and not [i for i in rep["issues"] if i["severity"] == "warning"], rep["issues"]
+    motion = rep["motion"]
+    assert motion["contacts"] and motion["events_fired"][0]["name"] == "footstep"
+    # The ground speed measured in the runtime is the one the generator announced.
+    assert motion["ground_speed"] == pytest.approx(
+        2 * 185 * 0.4226 / 0.55, rel=0.05)
+    everything = quality.analyze_animation(walker, runtime=False)
+    assert [a["animation"] for a in everything["animations"]] == ["high", "low", "walk"]

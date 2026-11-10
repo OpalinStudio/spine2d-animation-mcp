@@ -6,6 +6,7 @@
     png     one frame (`time`, setup pose without animation)
     frames  a folder of PNG frames
     sheet   a contact sheet (checkerboard behind transparent pixels)
+    onion   one still of the whole motion: ghosted frames + bone trails
     gif     animated GIF (1-bit alpha: edges matted on `matte`)
     apng    animated PNG, full alpha
     webp    animated WebP, full alpha
@@ -29,7 +30,7 @@ from typing import Any
 
 from .fetch import ensure_runtime
 
-FORMATS = ("png", "frames", "sheet", "gif", "apng", "webp", "mp4", "webm", "mov")
+FORMATS = ("png", "frames", "sheet", "onion", "gif", "apng", "webp", "mp4", "webm", "mov")
 NOISE = ("GPU stall due to ReadPixels",)
 
 
@@ -230,6 +231,19 @@ def _gif(frames, out: Path, fps: float, background: str | None, matte: str | Non
     pal_frames[0].save(out, **kw)
 
 
+def _checker(size: tuple[int, int], tile: int = 12):
+    from PIL import Image, ImageDraw
+
+    w, h = size
+    checker = Image.new("RGBA", (w, h), (205, 205, 205, 255))
+    d = ImageDraw.Draw(checker)
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            if (x // tile + y // tile) % 2:
+                d.rectangle([x, y, x + tile - 1, y + tile - 1], fill=(160, 160, 160, 255))
+    return checker
+
+
 def _sheet(frames, times, out: Path, columns: int, background: str | None, label: bool) -> None:
     from PIL import Image, ImageDraw
 
@@ -237,19 +251,98 @@ def _sheet(frames, times, out: Path, columns: int, background: str | None, label
     cols = max(1, min(columns, len(frames)))
     rows = -(-len(frames) // cols)
     sheet = Image.new("RGBA", (cols * w, rows * h), (38, 40, 46, 255))
-    tile = 12
-    checker = Image.new("RGBA", (w, h), (205, 205, 205, 255))
-    d = ImageDraw.Draw(checker)
-    for y in range(0, h, tile):
-        for x in range(0, w, tile):
-            if (x // tile + y // tile) % 2:
-                d.rectangle([x, y, x + tile - 1, y + tile - 1], fill=(160, 160, 160, 255))
+    checker = _checker((w, h))
     for i, (im, t) in enumerate(zip(frames, times)):
         cell = _flatten(im, _rgba(background)) if background else Image.alpha_composite(checker, im)
         if label:
             ImageDraw.Draw(cell).text((4, 3), f"{i}  t={t:.3f}s", fill=(255, 40, 120, 255))
         sheet.alpha_composite(cell, ((i % cols) * w, (i // cols) * h))
     sheet.save(out)
+
+
+TRAIL_COLORS = ((255, 64, 129), (0, 229, 255), (255, 214, 0), (118, 255, 3), (255, 145, 0),
+                (213, 0, 249), (29, 233, 182), (255, 255, 255))
+
+
+def _pick(n: int, count: int) -> list[int]:
+    """`count` indices spread over range(n), first and last included."""
+    count = max(1, min(count, n))
+    if count == 1:
+        return [0]
+    return sorted({round(i * (n - 1) / (count - 1)) for i in range(count)})
+
+
+def _onion(frames, times, out: Path, background: str | None, ghosts: int, tracks: dict | None,
+           view: dict) -> None:
+    """One still image of the whole motion: `ghosts` frames stacked from
+    faint (first) to opaque (last), plus the path of each tracked bone with a
+    dot per frame. The dot spacing IS the timing: close dots = slow, wide
+    dots = fast; a smooth curve = a clean arc."""
+    from PIL import Image, ImageDraw
+
+    w, h = frames[0].size
+    base = Image.new("RGBA", (w, h), _rgba(background, (38, 40, 46, 255)))
+    shown = _pick(len(frames), ghosts)
+    for n, i in enumerate(shown):
+        k = 1.0 if len(shown) == 1 else 0.16 + 0.84 * (n / (len(shown) - 1)) ** 1.6
+        ghost = frames[i].copy()
+        ghost.putalpha(ghost.getchannel("A").point(lambda a, k=k: round(a * k)))
+        base.alpha_composite(ghost)
+    if tracks:
+        d = ImageDraw.Draw(base)
+        s = view["outW"] / view["worldW"]
+        x0, y1 = view["cx"] - view["worldW"] / 2, view["cy"] + view["worldH"] / 2
+        for n, (bone, tr) in enumerate(tracks.items()):
+            color = TRAIL_COLORS[n % len(TRAIL_COLORS)]
+            pts = [((x - x0) * s, (y1 - y) * s) for x, y in zip(tr["x"], tr["y"])]
+            if len(pts) > 1:
+                d.line(pts, fill=color + (255,), width=2)
+            for i, (px, py) in enumerate(pts):
+                r = 4 if i in shown else 2
+                d.ellipse([px - r, py - r, px + r, py + r], fill=color + (255,), outline=(0, 0, 0, 255))
+            d.text((6, 4 + 12 * n), bone, fill=color + (255,))
+    base.save(out)
+
+
+def _tracks(samples: dict | None, wanted: list[str] | None) -> dict | None:
+    """{bone: {x, y, rotation, scaleX, scaleY}} lists (one value per frame)."""
+    if not samples or not samples.get("bones"):
+        return None
+    names = samples["bones"]
+    out: dict = {}
+    for bi, name in enumerate(names):
+        if wanted and "*" not in wanted and name not in wanted:
+            continue
+        cols = list(zip(*(fr[bi * 5: bi * 5 + 5] for fr in samples["frames"]))) or [(), (), (), (), ()]
+        out[name] = dict(zip(("x", "y", "rotation", "scaleX", "scaleY"), (list(c) for c in cols)))
+    return out
+
+
+def _write_preview(frames, times, fmt: str, out: Path, path: Path, background: str | None) -> None:
+    """A JPEG the assistant can look at: the image itself for png / sheet /
+    onion, else a contact sheet of the frames (a model cannot watch a GIF or
+    a video). At most 1568 px on the long side."""
+    from PIL import Image
+
+    if fmt in ("sheet", "onion"):
+        img = Image.open(out).convert("RGBA")
+    elif fmt == "png" or len(frames) == 1:
+        f = frames[0]
+        img = _flatten(f, _rgba(background)) if background else Image.alpha_composite(_checker(f.size), f)
+    else:
+        idx = _pick(len(frames), 12)
+        k = min(1.0, 256 / frames[0].width)
+        size = (max(1, round(frames[0].width * k)), max(1, round(frames[0].height * k)))
+        small = [frames[i].convert("RGBa").resize(size, Image.Resampling.LANCZOS).convert("RGBA") for i in idx]
+        tmp = path.with_suffix(".sheet.png")
+        _sheet(small, [times[i] for i in idx], tmp, 6, background, True)
+        img = Image.open(tmp).convert("RGBA")
+        img.load()
+        tmp.unlink()
+    k = min(1.0, 1568 / max(img.size))
+    if k < 1:
+        img = img.resize((round(img.width * k), round(img.height * k)), Image.Resampling.LANCZOS)
+    _flatten(img, (38, 40, 46, 255)).convert("RGB").save(path, format="JPEG", quality=85)
 
 
 def _video(frames_dir: Path, prefix: str, out: Path, fps: float, kind: str, background: str | None,
@@ -307,13 +400,21 @@ def render(
     runtime_version: str | None = None,
     overlays: list[dict] | None = None,
     loop: bool = True,
+    mix: float = 0,
+    times: list[float] | None = None,
+    debug: bool | dict | None = None,
+    track_bones: list[str] | None = None,
+    ghosts: int = 8,
+    preview: str | None = None,
 ) -> dict:
     if format not in FORMATS:
         raise RuntimeRenderError(f"format must be one of {', '.join(FORMATS)}")
-    if format != "png" and not animation and time is None and format != "frames":
+    if format != "png" and not animation and time is None and format != "frames" and not times:
         raise RuntimeRenderError(f"format {format} needs an animation")
     if format == "sheet" and width is None and height is None and scale == 1.0:
         width = 256  # cell size: a sheet of full-size frames gets huge fast
+    if format == "onion" and width is None and height is None and scale == 1.0:
+        width = 768
     out = Path(output).expanduser().resolve()
     with tempfile.TemporaryDirectory(prefix="spine-mcp-") as tmp_s:
         tmp = Path(tmp_s)
@@ -323,12 +424,16 @@ def render(
         req = {
             "mode": "render", "runtime_dir": str(rt.dir), "runtime_version": rt.version,
             "skeleton": str(sk), "atlas": str(at), "skin": skin, "animation": animation,
-            "time": 0.0 if format == "png" and time is None else time,
+            "time": 0.0 if format == "png" and time is None else time, "times": times,
             "fps": fps, "duration": duration, "loops": loops, "include_last": include_last,
             "scale": scale, "width": width, "height": height, "padding": padding,
-            "background": background, "supersample": supersample, "warmup": warmup,
+            "background": background, "warmup": warmup,
+            # Debug lines are 1 px wide: downscaling would wash them out.
+            "supersample": 1 if debug else supersample,
             "crop": crop, "out_dir": str(frames_dir), "prefix": "frame_",
-            "overlays": overlays or [], "loop": loop,
+            "overlays": overlays or [], "loop": loop, "mix": mix,
+            "debug": ({} if debug is True else debug) if debug else None,
+            "track": track_bones or None,
         }
         res = _run_worker(req, timeout)
         if not res.get("ok"):
@@ -336,17 +441,21 @@ def render(
             raise RuntimeRenderError(json.dumps({k: res.get(k) for k in ("stage", "error", "console")}))
         frame_paths = res.pop("frames")
         times = res.pop("times")
+        samples = res.pop("samples", None) or {}
+        tracks = _tracks(samples, track_bones)
         out.parent.mkdir(parents=True, exist_ok=True)
+        frames = _load(frame_paths) if format != "frames" or preview else []
         if format == "frames":
             result_files = frame_paths
         else:
-            frames = _load(frame_paths)
             if format == "png":
                 img = frames[0] if not background else _flatten(frames[0], _rgba(background))
                 img.save(out)
             elif format == "sheet":
                 step = max(1, -(-len(frames) // max_sheet_frames))
                 _sheet(frames[::step], times[::step], out, columns, background, label)
+            elif format == "onion":
+                _onion(frames, times, out, background, ghosts, tracks, res.get("view", {}))
             elif format == "gif":
                 _gif(frames, out, fps, background, matte, loop=0)
             elif format == "apng":
@@ -360,6 +469,8 @@ def render(
             else:
                 _video(Path(frames_dir), "frame_", out, fps, format, background, frames)
             result_files = [str(out)]
+        if preview:
+            _write_preview(frames, times, format, out, Path(preview), background)
     view = res.get("view", {})
     warnings = []
     if not background and format not in ("mp4",):
@@ -382,7 +493,7 @@ def render(
         "format": format,
         "frames": len(times),
         "fps": fps,
-        "duration": round(len(times) / fps, 4) if animation else 0,
+        "duration": round(len(times) / fps, 4) if animation and not req["times"] else 0,
         "size": [view.get("outW"), view.get("outH")],
         "world_bounds": res.get("bounds"),
         "pixels_per_unit": view.get("scale"),
@@ -391,5 +502,50 @@ def render(
         "atlas_source": how,
         "runtime": f"spine-webgl {rt.version}",
         "skeleton_info": res.get("info"),
+        **({"times": [round(t, 4) for t in times]} if req["times"] else {}),
+        **({"tracks": tracks} if tracks else {}),
+        **({"events": samples["events"]} if samples.get("events") else {}),
+        **({"preview": str(preview)} if preview else {}),
         **({"console": res["console"]} if res.get("console") else {}),
+    }
+
+
+def sample(
+    skeleton: str,
+    animation: str | None = None,
+    bones: list[str] | None = None,
+    fps: float = 30,
+    duration: float | None = None,
+    loops: int = 1,
+    include_last: bool = True,
+    warmup: float = 0,
+    skin: str | None = None,
+    atlas: str | None = None,
+    overlays: list[dict] | None = None,
+    loop: bool = True,
+    mix: float = 0,
+    times: list[float] | None = None,
+    runtime_version: str | None = None,
+    timeout: float = 300,
+) -> dict:
+    """Bone world transforms over an animation as the official runtime
+    computes them (constraints and physics applied), without drawing:
+    {times, tracks: {bone: {x, y, rotation, scaleX, scaleY}}, events}."""
+    with tempfile.TemporaryDirectory(prefix="spine-mcp-") as tmp:
+        sk, at, _ = resolve_inputs(skeleton, atlas, Path(tmp))
+        rt = ensure_runtime(runtime_line_for(sk, runtime_version))
+        res = _run_worker({
+            "mode": "sample", "runtime_dir": str(rt.dir), "runtime_version": rt.version,
+            "skeleton": str(sk), "atlas": str(at), "skin": skin, "animation": animation,
+            "fps": fps, "duration": duration, "loops": loops, "include_last": include_last,
+            "warmup": warmup, "overlays": overlays or [], "loop": loop, "mix": mix,
+            "times": times, "track": bones or ["*"],
+        }, timeout)
+    if not res.get("ok"):
+        raise RuntimeRenderError(json.dumps({k: res.get(k) for k in ("stage", "error", "console")}))
+    samples = res.get("samples") or {}
+    return {
+        "animation": animation, "fps": fps, "times": [round(t, 5) for t in res["times"]],
+        "tracks": _tracks(samples, bones) or {}, "events": samples.get("events") or [],
+        "skeleton_info": res.get("info"), "runtime": f"spine-webgl {rt.version}",
     }

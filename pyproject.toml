@@ -1,6 +1,6 @@
 [project]
 name = "spine2d-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCP server to rig, animate, preview and export Spine 4.3 skeletons (macOS, Windows, Linux)"
 readme = "README.md"
 requires-python = ">=3.11"
