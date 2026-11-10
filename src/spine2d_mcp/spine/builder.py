@@ -45,35 +45,47 @@ def build(
     """Build the rig. With `orient_bones`, bones point along their body part
     (limbs down, spine/neck/head up) and get a length, like a hand-made rig:
     bones draw along the limbs in the editor and IK constraints work. Without
-    it every bone keeps rotation 0 (the original PoC behavior)."""
+    it every bone keeps rotation 0.
+
+    Layers that are not body parts are kept: each gets its own bone at its
+    center (or `[pivot]` marker), parented to its bone group (a body-part
+    group such as `head`, or a `[bone]` group), else to root."""
     # Map canonical part -> layer, keeping each layer's z-index for draw order.
     parts: dict[str, PsdLayer] = {}
     part_z: dict[str, int] = {}
+    extras: list[tuple[int, PsdLayer]] = []
     for z, layer in enumerate(parsed.layers):
         part = conv.canonical_part(layer.name)
         if part is not None and part not in parts:
             parts[part] = layer
             part_z[part] = z
+        else:
+            extras.append((z, layer))
 
-    if not parts:
-        raise ValueError(
-            "No recognized body-part layers found. Expected names like "
-            "head, body, arm_left, leg_right, etc."
-        )
+    if not parts and not extras:
+        raise ValueError("The PSD has no visible pixel layer to import.")
 
-    present = set(parts)
+    # A body part that only exists as a group (a `head` group of face layers)
+    # is a bone without an image of its own, placed from the group's bounds.
+    frames: dict[str, PsdLayer] = dict(parts)
+    for g in parsed.groups.values():
+        box = g.as_layer()
+        if g.canonical and g.name not in frames and box is not None:
+            frames[g.name] = box
+
+    present = set(frames)
     chain = conv.resolve_chain(present)  # includes virtual intermediates
 
     # World pivots for every bone in the chain (present + virtual).
-    world = _compute_pivots(chain, present, parts, parsed)
+    world = _compute_pivots(chain, present, frames, parsed)
 
     rot, length = (
-        _orientation(chain, present, parts, world) if orient_bones else ({}, {})
+        _orientation(chain, present, frames, world) if orient_bones else ({}, {})
     )
 
     bones: list[Bone] = [Bone(name=conv.ROOT_BONE)]
     for part in chain:
-        parent = conv.parent_of(part)
+        parent = conv.parent_of(part, present)
         px, py = world[part]
         if parent == conv.ROOT_BONE:
             ppx, ppy = 0.0, 0.0
@@ -92,20 +104,53 @@ def build(
             )
         )
 
-    # Slots in PSD z-order (draw order); only present parts get a slot.
+    taken = {b.name for b in bones}
+
+    def unique(base: str) -> str:
+        name, n = base or "layer", 2
+        while name in taken:
+            name, n = f"{base}_{n}", n + 1
+        taken.add(name)
+        return name
+
+    def free_bone(base: str, parent: str | None, layer: PsdLayer) -> str:
+        """An unrotated bone at the layer's pivot marker or center."""
+        name = unique(base)
+        parent = parent if parent in world else conv.ROOT_BONE
+        marker = parsed.pivot_markers.get(conv.normalize(base))
+        cx, cy = marker if marker is not None else layer.center
+        px, py = cx, parsed.height - cy
+        ppx, ppy = world.get(parent, (0.0, 0.0))
+        prot = rot.get(parent, 0.0)
+        lx, ly = _rotate(px - ppx, py - ppy, -prot)
+        bones.append(Bone(name=name, parent=parent, x=_round(lx), y=_round(ly), rotation=_round(-prot)))
+        world[name] = (px, py)
+        return name
+
+    # `[bone]` groups, parents first.
+    group_bone: dict[str, str] = {p: p for p in chain}
+    for g in parsed.groups.values():
+        box = g.as_layer()
+        if not g.canonical and box is not None:
+            group_bone[g.name] = free_bone(_safe(g.name), group_bone.get(g.parent or ""), box)
+
+    # Slots in PSD z-order (draw order); only layers get a slot.
+    entries: list[tuple[int, str, PsdLayer]] = [(part_z[p], p, parts[p]) for p in parts]
+    for z, layer in extras:
+        entries.append((z, free_bone(_safe(layer.name), group_bone.get(layer.group or ""), layer), layer))
     slots: list[Slot] = []
     attachments: dict[str, dict[str, RegionAttachment]] = {}
-    for part in sorted(present, key=lambda p: part_z[p]):
-        layer = parts[part]
-        slots.append(Slot(name=part, bone=part, attachment=part))
+    images: dict[str, PsdLayer] = {}
+    for _, name, layer in sorted(entries, key=lambda e: e[0]):
+        slots.append(Slot(name=name, bone=name, attachment=name))
         # Attachment offset so the image stays where it was in the PSD.
         icx = layer.left + layer.width / 2.0
         icy = parsed.height - (layer.top + layer.height / 2.0)
-        bx, by = world[part]
-        wr = rot.get(part, 0.0)
+        bx, by = world[name]
+        wr = rot.get(name, 0.0)
         ax, ay = _rotate(icx - bx, icy - by, -wr)
-        attachments[part] = {
-            part: RegionAttachment(
+        attachments[name] = {
+            name: RegionAttachment(
                 width=float(layer.width),
                 height=float(layer.height),
                 x=_round(ax),
@@ -113,6 +158,7 @@ def build(
                 rotation=_round(-wr),
             )
         }
+        images[name] = layer
 
     project = SpineProject(
         bones=bones,
@@ -125,15 +171,17 @@ def build(
     validate(project)
 
     regions = [
-        Region(name=part, width=parts[part].width, height=parts[part].height)
-        for part in present
+        Region(name=name, width=layer.width, height=layer.height)
+        for name, layer in images.items()
     ]
     atlas = pack(regions, max_size=max_atlas_size)
-    return BuildResult(
-        project=project,
-        atlas=atlas,
-        images={part: parts[part] for part in present},
-    )
+    return BuildResult(project=project, atlas=atlas, images=images)
+
+
+def _safe(name: str) -> str:
+    """A layer / group name usable as a bone, slot and image file name."""
+    out = "".join("_" if c in '/\\:*?"<>|' or c.isspace() else c for c in conv.strip_tags(name))
+    return out.strip("_.")
 
 
 def _round(v: float) -> float:

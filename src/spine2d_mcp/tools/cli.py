@@ -7,10 +7,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from ..cli import spine_cli as cli
-from ._common import mcp, resolve
+from ._common import READ_ONLY, mcp, resolve
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def spine_status(spine_path: str | None = None, check_version: bool = False) -> dict:
     """Locate the Spine executable on this machine (macOS / Windows / Linux)
     and report the environment (SPINE_EXE, SPINE_VERSION, SPINE_ARGS).
@@ -21,7 +21,7 @@ def spine_status(spine_path: str | None = None, check_version: bool = False) -> 
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def spine_cli_help(advanced: bool = False, spine_path: str | None = None) -> dict:
     """Print the installed Spine CLI help (`--help`, or `--advanced`), the
     authoritative list of flags for the user's exact editor version."""
@@ -150,7 +150,7 @@ def spine_clean_up(project: str, spine_path: str | None = None) -> dict:
     return cli.clean_up(project, spine_path).as_dict()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def spine_project_info(input_path: str, spine_path: str | None = None) -> dict:
     """Print information about a project or data file (skeletons, animations,
     version...) via `Spine -i <path>`."""

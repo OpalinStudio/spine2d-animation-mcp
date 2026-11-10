@@ -35,7 +35,7 @@ import copy
 from typing import Any
 
 from . import format as fmt
-from .curves import bezier_value, to_spine_curve
+from .curves import bezier_value, split_bezier, to_spine_curve
 
 TIMELINE_KINDS = (
     "bone",
@@ -489,6 +489,220 @@ def _walk_keys(anim: dict, fn) -> None:
             fn(anim[k], None)
     for folder in anim.get("drawOrderFolder") or []:
         fn(folder.get("keys") or [], None)
+
+
+# ---------------------------------------------------------- key editing
+def iter_timelines(anim: dict):
+    """Every timeline of an animation as (kind, target, timeline, container,
+    key, spec): the key list is `container[key]`; spec is None for events."""
+    for group, kind, table in (("bones", "bone", fmt.BONE_TIMELINES), ("slots", "slot", fmt.SLOT_TIMELINES)):
+        for target, tls in (anim.get(group) or {}).items():
+            for tl in list(tls or {}):
+                yield kind, target, tl, tls, tl, table.get(tl)
+    for kind in ("ik", "transform"):
+        for target in list(anim.get(kind) or {}):
+            yield kind, target, None, anim[kind], target, fmt.constraint_timeline_specs(kind)[""]
+    for kind in ("path", "physics", "slider"):
+        for target, tls in (anim.get(kind) or {}).items():
+            for tl in list(tls or {}):
+                yield kind, target, tl, tls, tl, fmt.constraint_timeline_specs(kind).get(tl)
+    for skin, slots_ in (anim.get("attachments") or {}).items():
+        for slot, atts in slots_.items():
+            for att, tls in atts.items():
+                for tl in list(tls):
+                    spec = fmt.DEFORM_TIMELINE if tl == "deform" else fmt.SEQUENCE_TIMELINE
+                    yield tl, f"{skin}/{slot}/{att}", None, tls, tl, spec
+    if anim.get("drawOrder"):
+        yield "drawOrder", None, None, anim, "drawOrder", fmt.SEQUENCE_TIMELINE
+    for folder in anim.get("drawOrderFolder") or []:
+        if folder.get("keys"):
+            yield "drawOrder", None, None, folder, "keys", fmt.SEQUENCE_TIMELINE
+    if anim.get("events"):
+        yield "events", None, None, anim, "events", None
+
+
+def _is_deform(spec: fmt.TimelineSpec) -> bool:
+    return spec.values == ("__blend",)
+
+
+def _vertices(k: dict, n: int = 0) -> list[float]:
+    """A deform key's vertex offsets as a full array (leading `offset`
+    zeros), padded to n."""
+    out = [0.0] * int(k.get("offset", 0)) + [float(v) for v in k.get("vertices") or []]
+    return out + [0.0] * (n - len(out))
+
+
+def _pose_of(spec: fmt.TimelineSpec, k: dict) -> list[float]:
+    return _vertices(k) if _is_deform(spec) else key_values(spec, k)
+
+
+def _value_fields(spec: fmt.TimelineSpec, values: list[float]) -> dict:
+    """Key fields holding `values` (the inverse of key_values)."""
+    if spec.kind == "color":
+        out, i = {}, 0
+        for fld, n in spec.color_fields:
+            out[fld] = "".join(f"{max(0, min(255, round(v * 255))):02x}" for v in values[i:i + n])
+            i += n
+        return out
+    return {name: _r(v) for name, v in zip(spec.values, values)}
+
+
+def _key_between(spec: fmt.TimelineSpec, k: dict, nxt: dict, t: float) -> tuple[Any, dict]:
+    """Cut the segment k -> nxt at time t, keeping its shape: (curve of k up
+    to the new key, the new key with its curve to nxt)."""
+    t1, t2 = key_time(k), key_time(nxt)
+    curve = k.get("curve")
+    new = {kk: vv for kk, vv in k.items() if kk != "curve"}
+    new["time"] = t
+    if _is_deform(spec):
+        if curve == "stepped":
+            blend, left, right = 0.0, "stepped", "stepped"
+        elif isinstance(curve, list):
+            blend, lc, rc = split_bezier(t, t1, 0.0, curve[0], curve[1], curve[2], curve[3], t2, 1.0)
+            if 1e-6 < blend < 1 - 1e-6:
+                left = [lc[0], lc[1] / blend, lc[2], lc[3] / blend]
+                right = [rc[0], (rc[1] - blend) / (1 - blend), rc[2], (rc[3] - blend) / (1 - blend)]
+            else:
+                left = right = None
+        else:
+            blend, left, right = (t - t1) / (t2 - t1), None, None
+        n = max(len(_vertices(k)), len(_vertices(nxt)))
+        a, b = _vertices(k, n), _vertices(nxt, n)
+        new.pop("offset", None)
+        new.pop("vertices", None)
+        verts = [_r(x + (y - x) * blend) for x, y in zip(a, b)]
+        if any(verts):
+            new["vertices"] = verts
+    else:
+        v1, v2 = key_values(spec, k), key_values(spec, nxt)
+        if curve == "stepped":
+            vals, left, right = v1, "stepped", "stepped"
+        elif isinstance(curve, list) and len(curve) == 4 * len(v1):
+            vals, left, right = [], [], []
+            for j, (x, y) in enumerate(zip(v1, v2)):
+                v, lc, rc = split_bezier(t, t1, x, *curve[j * 4:j * 4 + 4], t2, y)
+                vals.append(v)
+                left += lc
+                right += rc
+        else:
+            a = (t - t1) / (t2 - t1)
+            vals, left, right = [x + (y - x) * a for x, y in zip(v1, v2)], None, None
+        new.update(_value_fields(spec, vals))
+    if right is not None:
+        new["curve"] = right
+    return left, new
+
+
+def with_key_at(spec: fmt.TimelineSpec, keys: list[dict], t: float) -> list[dict]:
+    """The same curve timeline with a key at time t (inserted on the curve,
+    or a hold before the first / after the last key)."""
+    keys = [dict(k) for k in keys]
+    if any(abs(key_time(k) - t) < 1e-6 for k in keys):
+        return keys
+    if t < key_time(keys[0]):
+        hold = {kk: vv for kk, vv in keys[0].items() if kk != "curve"}
+        hold["time"] = t
+        return [hold, *keys]
+    if t > key_time(keys[-1]):
+        hold = {kk: vv for kk, vv in keys[-1].items() if kk != "curve"}
+        hold["time"] = t
+        return [*keys, hold]
+    i = max(j for j, k in enumerate(keys) if key_time(k) < t)
+    left, new = _key_between(spec, keys[i], keys[i + 1], t)
+    keys[i].pop("curve", None)
+    if left is not None:
+        keys[i]["curve"] = left
+    return [*keys[:i + 1], new, *keys[i + 1:]]
+
+
+def _moved(k: dict, delta: float) -> dict:
+    out = dict(k)
+    out["time"] = key_time(k) + delta
+    if isinstance(k.get("curve"), list):
+        out["curve"] = [v + delta if i % 2 == 0 else v for i, v in enumerate(k["curve"])]
+    return out
+
+
+def _tidy_all(keys: list[dict]) -> list[dict]:
+    out = []
+    for k in keys:
+        k = dict(k)
+        if isinstance(k.get("curve"), list):
+            k["curve"] = [_r(v) for v in k["curve"]]
+        if not k.get("time") or abs(k["time"]) < 1e-6:
+            k.pop("time", None)
+        out.append(_tidy_key(k))
+    return out
+
+
+def shift_keys(
+    keys: list[dict], spec: fmt.TimelineSpec | None, offset: float, duration: float,
+    wrap: bool = True,
+) -> list[dict]:
+    """Move a timeline in time by `offset` seconds.
+
+    wrap=True treats it as a loop of length `duration`: what leaves at the
+    end comes back at the start, the curve is cut exactly at the loop point
+    (same motion, new phase). This is how overlapping action is made: the
+    forearm repeats the arm's motion a few frames later. A curve timeline
+    must loop (first key = last key) to be wrapped. spec None = events."""
+    if not keys:
+        return keys
+    if not wrap:
+        if min(key_time(k) for k in keys) + offset < -1e-9:
+            raise AnimationError("offset would move keys before 0 (use wrap=true on a loop)")
+        return _tidy_all([_moved(k, offset) for k in keys])
+    if duration <= 0:
+        raise AnimationError("wrap needs a loop duration > 0")
+    d = offset % duration
+    if d < 1e-6 or duration - d < 1e-6:
+        return keys
+    if max(key_time(k) for k in keys) > duration + 1e-6:
+        raise AnimationError("timeline is longer than the loop duration")
+    if spec is None or not spec.curve:
+        # Events fire at their new time; stepped keys also need the state that
+        # is active across the loop point at time 0.
+        by_time = {round((key_time(k) + d) % duration, 6): {**k, "time": (key_time(k) + d) % duration}
+                   for k in keys}
+        out = [by_time[t] for t in sorted(by_time)]
+        if spec is not None and key_time(out[0]) > 1e-6:
+            out.insert(0, {**out[-1], "time": 0})
+        return _tidy_all(out)
+    ks = with_key_at(spec, with_key_at(spec, keys, 0.0), duration)
+    a, b = _pose_of(spec, ks[0]), _pose_of(spec, ks[-1])
+    n = max(len(a), len(b))
+    if any(abs(x - y) > 1e-3 for x, y in zip(a + [0.0] * (n - len(a)), b + [0.0] * (n - len(b)))):
+        raise AnimationError("timeline does not loop (first and last key differ): "
+                             "make them equal or pass wrap=false")
+    cut = duration - d
+    ks = with_key_at(spec, ks, cut)
+    head = [k for k in ks if key_time(k) < cut - 1e-6]
+    tail = [k for k in ks if key_time(k) >= cut - 1e-6]
+    end = {kk: vv for kk, vv in tail[0].items() if kk != "curve"}
+    end["time"] = duration
+    return _tidy_all([*(_moved(k, -cut) for k in tail[:-1]), *(_moved(k, d) for k in head), end])
+
+
+def scale_values(spec: fmt.TimelineSpec, keys: list[dict], factor: float, pivot: float | None = None) -> list[dict]:
+    """Amplify (factor > 1) or soften (< 1) a numeric timeline around `pivot`
+    (default: the timeline's neutral value, 0 for offsets and 1 for scale).
+    Curves keep their shape."""
+    if spec.kind != "num" or not spec.curve or _is_deform(spec):
+        raise AnimationError("only numeric curve timelines can be scaled")
+    out = []
+    for k in keys:
+        k = dict(k)
+        for j, (name, default) in enumerate(zip(spec.values, spec.defaults)):
+            p = default if pivot is None else pivot
+            if name in k or p != default:
+                k[name] = _r(p + (float(k.get(name, default)) - p) * factor)
+            if isinstance(k.get("curve"), list) and len(k["curve"]) == 4 * len(spec.values):
+                c = list(k["curve"])
+                for i in (j * 4 + 1, j * 4 + 3):
+                    c[i] = _r(p + (c[i] - p) * factor)
+                k["curve"] = c
+        out.append(k)
+    return out
 
 
 # ------------------------------------------------------------- sampling

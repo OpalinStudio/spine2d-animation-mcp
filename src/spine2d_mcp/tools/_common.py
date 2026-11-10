@@ -8,26 +8,16 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
+from ..guide import SERVER_INSTRUCTIONS
 from ..spine import document as doc
 from ..spine.validator import ValidationReport
 
-mcp = FastMCP(
-    "spine2d-mcp",
-    instructions=(
-        "Spine 4.3 (Essential/Professional) animation toolkit. Skeletons are "
-        "Spine JSON files on disk: every editing tool takes `skeleton` (path to "
-        "the .json), applies one change, validates against the 4.3 format and "
-        "saves (an invalid result is rejected and the file is left untouched). "
-        "Typical flow: import_psd_to_spine or create_skeleton -> bones / slots / "
-        "attachments / constraints -> animations (set_keyframes, "
-        "generate_animation) -> render_preview to look at the result -> "
-        "spine_import_data to build a .spine project, spine_export for runtime "
-        "files. Call spine_reference for the format cheat sheet (timelines, "
-        "curves, constraints). Coordinates are Spine's: y-up, bone-local, "
-        "rotations in degrees counter-clockwise."
-    ),
-)
+mcp = FastMCP("spine2d-mcp", instructions=SERVER_INSTRUCTIONS)
+
+# Tools that only read: clients can run them without asking.
+READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
 
 def resolve(path: str) -> Path:

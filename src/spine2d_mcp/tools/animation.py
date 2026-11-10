@@ -6,12 +6,13 @@ from __future__ import annotations
 import copy
 from typing import Any, Literal
 
+from .. import guide
 from ..spine import animation as an
 from ..spine import curves
 from ..spine import document as doc
 from ..spine import generators as gen
 from ..spine import preview
-from ._common import editing, mcp, resolve
+from ._common import READ_ONLY, editing, mcp, resolve
 
 
 @mcp.tool()
@@ -195,11 +196,156 @@ def retime_animation(
     return ed.result(animation=animation, duration=dur, factor=factor)
 
 
+def _get_anim(data: dict, animation: str) -> dict:
+    anim = doc.animations(data).get(animation)
+    if anim is None:
+        raise ValueError(f"animation {animation!r} not found")
+    return anim
+
+
+@mcp.tool()
+def offset_keys(
+    skeleton: str,
+    animation: str,
+    offset: float,
+    bones: list[str] | None = None,
+    slots: list[str] | None = None,
+    timelines: list[str] | None = None,
+    wrap: bool = True,
+    stagger: float = 0.0,
+    loop_duration: float | None = None,
+) -> dict:
+    """Shift keys in time (seconds; 1 frame at 30 fps = 0.0333), the tool for
+    OVERLAPPING ACTION and follow-through: parts of a body should not all hit
+    their extreme pose on the same frame.
+
+    bones / slots: whose timelines to move (neither = the whole animation,
+    events and draw order included). timelines: only these (e.g. ["rotate"]).
+    stagger: extra delay per bone in list order, so bones=["arm", "forearm",
+    "hand"], offset=0, stagger=0.066 makes the forearm lag 2 frames behind
+    the arm and the hand 4: a whip-like drag instead of a rigid swing.
+    wrap=true (loops): what leaves at the end re-enters at the start and the
+    curve is cut exactly at the loop point, so the motion is unchanged, only
+    its phase; the timeline must loop (first key = last key). loop_duration
+    defaults to the animation's duration. wrap=false simply moves the keys
+    (one-shot animations; negative offsets must not pass time 0)."""
+    moved: list[str] = []
+    with editing(skeleton) as ed:
+        anim = _get_anim(ed.data, animation)
+        duration = loop_duration or an.animation_duration(anim)
+        for b in bones or []:
+            doc.find_bone(ed.data, b)
+        for s in slots or []:
+            doc.find_slot(ed.data, s)
+        everything = bones is None and slots is None
+        for kind, target, tl, container, key, spec in list(an.iter_timelines(anim)):
+            if timelines and (tl or kind) not in timelines:
+                continue
+            if everything:
+                delta = offset
+            elif kind == "bone" and target in (bones or []):
+                delta = offset + stagger * bones.index(target)
+            elif kind == "slot" and target in (slots or []):
+                delta = offset
+            elif kind in ("deform", "sequence") and target.split("/")[1] in (slots or []):
+                delta = offset
+            else:
+                continue
+            if not delta:
+                continue
+            pulse = kind == "events" or (kind == "physics" and tl == "reset")
+            try:
+                container[key] = an.shift_keys(container[key], None if pulse else spec, delta, duration, wrap)
+            except an.AnimationError as e:
+                raise ValueError(f"{kind} {target or ''} {tl or ''}: {e}".replace("  ", " ")) from e
+            moved.append(".".join(x for x in (kind, target, tl) if x))
+        if not moved:
+            raise ValueError("no timeline matched (check bones / slots / timelines)")
+        dur = an.animation_duration(anim)
+    return ed.result(animation=animation, shifted=moved, duration=dur)
+
+
+@mcp.tool()
+def scale_keys(
+    skeleton: str,
+    animation: str,
+    factor: float,
+    bones: list[str] | None = None,
+    timelines: list[str] | None = None,
+    pivot: float | None = None,
+) -> dict:
+    """Exaggerate (factor > 1) or soften (< 1) the motion of bones without
+    touching its timing: every key value and curve handle is scaled around
+    the neutral value (0 for rotate / translate / shear, 1 for scale; or
+    `pivot`). factor=1.3 on ["rotate"] pushes the poses 30 % further,
+    factor=-1 mirrors a rotation. bones None = every bone; timelines filters
+    (rotate, translate, translatex, scale, shear...)."""
+    scaled: list[str] = []
+    with editing(skeleton) as ed:
+        anim = _get_anim(ed.data, animation)
+        for b in bones or []:
+            doc.find_bone(ed.data, b)
+        for kind, target, tl, container, key, spec in list(an.iter_timelines(anim)):
+            if kind != "bone" or (bones is not None and target not in bones):
+                continue
+            if (timelines and tl not in timelines) or spec is None or not spec.curve:
+                continue
+            container[key] = an.scale_values(spec, container[key], factor, pivot)
+            scaled.append(f"{target}.{tl}")
+        if not scaled:
+            raise ValueError("no bone timeline matched (check bones / timelines)")
+    return ed.result(animation=animation, scaled=scaled, factor=factor)
+
+
+@mcp.tool()
+def copy_keys(
+    skeleton: str,
+    animation: str,
+    bone_map: dict[str, str],
+    to_animation: str | None = None,
+    timelines: list[str] | None = None,
+    value_scale: float = 1.0,
+    time_offset: float = 0.0,
+    wrap: bool = True,
+) -> dict:
+    """Copy bone timelines from one bone to another: bone_map = {source:
+    destination}, inside `animation` or into `to_animation` (created if
+    needed; same bone names to copy a motion between animations).
+
+    Left / right symmetry: bone_map={"leg_left": "leg_right"}, time_offset =
+    half the cycle (wrap=true) gives the opposite leg of a walk; value_scale
+    = -1 mirrors rotate / translate / shear values for a bone that faces the
+    other way (scale timelines are copied as they are). The destination's
+    existing timelines of the same name are replaced."""
+    copied: list[str] = []
+    with editing(skeleton) as ed:
+        src_anim = _get_anim(ed.data, animation)
+        dst_anim = doc.animations(ed.data).setdefault(to_animation or animation, {})
+        duration = an.animation_duration(src_anim)
+        for src, dst in bone_map.items():
+            doc.find_bone(ed.data, src)
+            doc.find_bone(ed.data, dst)
+            for tl, keys in ((src_anim.get("bones") or {}).get(src) or {}).items():
+                spec = an.spec_for("bone", tl)
+                if timelines and tl not in timelines:
+                    continue
+                new = copy.deepcopy(keys)
+                if value_scale != 1 and spec.curve and not tl.startswith("scale"):
+                    new = an.scale_values(spec, new, value_scale)
+                if time_offset:
+                    new = an.shift_keys(new, spec, time_offset, duration, wrap)
+                dst_anim.setdefault("bones", {}).setdefault(dst, {})[tl] = new
+                copied.append(f"{src}.{tl} -> {dst}.{tl}")
+        if not copied:
+            raise ValueError("nothing to copy: the source bones have no keys in this animation")
+    return ed.result(animation=to_animation or animation, copied=copied)
+
+
 PRESET_HELP = {
     "idle": "breathing idle (duration, intensity, roles)",
-    "walk": "walk cycle (duration, stride, arm_swing, bob, lean, roles)",
-    "run": "run cycle (duration, stride, arm_swing, bob, lean, roles)",
-    "jump": "anticipation, jump, landing with squash & stretch (duration, height, squash, roles)",
+    "walk": "walk cycle (duration, stride, arm_swing, bob, lean, roles; IK legs get planted feet: step_height, stance, facing)",
+    "run": "run cycle (duration, stride, arm_swing, bob, lean, roles; IK legs get planted feet: step_height, stance, facing)",
+    "jump": "anticipation, jump, landing with squash & stretch (duration, height, squash, roles; IK legs squat, tuck and land)",
     "wave": "raise an arm and wave (duration, side left|right, raise_angle, waves, roles)",
     "nod": "head nod (duration, amplitude, repeats, roles)",
     "head_shake": "head shake 'no' (duration, amplitude, repeats, roles)",
@@ -310,14 +456,14 @@ def render_preview(
     show_bones: bool = False,
     background: str | None = "#2b2b2b",
 ) -> dict:
-    """Render the skeleton to an image WITHOUT Spine (pure Python), to check
-    a rig or an animation visually: a single frame (setup pose when no
-    animation), a contact sheet of `frames` frames, or an animated GIF.
-    Images: skeleton.images folder (default), `images_dir`, or a texture
-    `atlas` (.atlas next to the JSON is used automatically). Regions, meshes
-    (weights, deform), colors and draw order are rendered; constraints and
-    clipping are not simulated (use spine_export with PNG settings for an
-    exact render)."""
+    """Quick draft render WITHOUT Spine or a browser (pure Python): a single
+    frame (setup pose when no animation), a contact sheet of `frames` frames,
+    or an animated GIF. Images: skeleton.images folder (default),
+    `images_dir`, or a texture `atlas` (.atlas next to the JSON is used
+    automatically). Regions, meshes (weights, deform), colors and draw order
+    are rendered; constraints (IK, physics, transform, path, sliders) and
+    clipping are NOT simulated: to judge an animation use runtime_render,
+    which draws what the game draws and returns the picture."""
     data = doc.load(resolve(skeleton))
     common = dict(skeleton_path=resolve(skeleton), skin=skin, images_dir=images_dir,
                   atlas_path=atlas, show_bones=show_bones, background=background)
@@ -334,11 +480,23 @@ def render_preview(
     return preview.render_gif(data, out, animation, fps=fps, size=(width, height), **common)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def spine_reference(
-    topic: Literal["timelines", "curves", "constraints", "presets", "attachments", "workflow", "4.3"] = "workflow",
+    topic: Literal["workflow", "quality", "recipes", "checklist", "timelines", "curves",
+                   "constraints", "presets", "attachments", "4.3"] = "workflow",
 ) -> dict:
-    """Cheat sheet of the Spine 4.3 format and of this server's conventions."""
+    """How to work with this server. workflow: the method, step by step.
+    quality: the animation principles mapped to tool calls, timing numbers,
+    loop / transition / physics rules (read it before animating). recipes:
+    ready-made key timings (attack, walk, idle, impact, pop, bending
+    meshes...). checklist: what to verify before delivering. timelines /
+    curves / constraints / attachments / presets / 4.3: format cheat sheets."""
+    if topic == "quality":
+        return guide.QUALITY
+    if topic == "recipes":
+        return guide.RECIPES
+    if topic == "checklist":
+        return {"before delivering": guide.CHECKLIST}
     if topic == "curves":
         return {
             "presets": curves.preset_names(),
@@ -397,15 +555,4 @@ def spine_reference(
             ],
             "format": "unified `constraints` array with `type`; transform `source` (not target); IK `scaleY` replaces `uniform`; linked mesh `source` (not parent)",
         }
-    return {
-        "workflow": [
-            "1. import_psd_to_spine (layered PSD -> rig + images + atlas) or create_skeleton",
-            "2. add/update bones, slots, attachments (region, mesh, clipping...), skins",
-            "3. constraints: IK (legs/arms), transform, path, physics (hair/cloth), sliders",
-            "4. animations: generate_animation presets, set_keyframes, draw order, events",
-            "5. render_preview (frame / sheet / gif) to check visually",
-            "6. spine_import_data -> .spine project to open in Spine 4.3",
-            "7. spine_export -> runtime JSON/.skel + atlas, PNG/GIF/video via settings",
-        ],
-        "files": "skeletons are JSON paths; edits are validated and saved atomically",
-    }
+    return guide.WORKFLOW

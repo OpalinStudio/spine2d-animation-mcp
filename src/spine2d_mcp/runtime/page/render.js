@@ -80,19 +80,29 @@
     }
     setupPose(sk);
     const stateData = new S.AnimationStateData(data);
+    // Crossfade between consecutive animations of a track, as set in the game.
+    stateData.defaultMix = cfg.mix || 0;
     const st = new S.AnimationState(stateData);
+    // t0: playhead when the capture starts (after warm-up); event times are relative to it.
+    const inst = { sk, st, t: 0, t0: 0, overlays: [], events: [] };
+    st.addListener({
+      event: (entry, ev) => inst.events.push({
+        time: Math.round((inst.t - inst.t0) * 1e4) / 1e4, name: ev.data.name, track: entry.trackIndex,
+        animation: entry.animation ? entry.animation.name : null,
+      }),
+    });
     if (cfg.animation) {
       if (!data.findAnimation(cfg.animation)) throw new Error("animation not found: " + cfg.animation);
       st.setAnimation(0, cfg.animation, cfg.loop !== false);
     }
-    // Extra tracks (e.g. blink on track 1): [{track, animation, start, loop}], fired when
-    // the playhead reaches `start`, exactly as a game state machine would set them.
-    const overlays = (cfg.overlays || []).map((o) => Object.assign({ fired: false }, o))
+    // Animations set later: [{track, animation, start, loop, mix}], fired when the playhead
+    // reaches `start`, exactly as a game state machine would set them. Track 1+ layers on
+    // top (blink); track 0 replaces the main animation (transition test, with `mix`).
+    inst.overlays = (cfg.overlays || []).map((o) => Object.assign({ fired: false }, o))
       .sort((a, b) => a.start - b.start);
-    for (const o of overlays) {
+    for (const o of inst.overlays) {
       if (!data.findAnimation(o.animation)) throw new Error("animation not found: " + o.animation);
     }
-    const inst = { sk, st, t: 0, overlays };
     fire(inst);
     step(inst, 0);
     return inst;
@@ -101,10 +111,46 @@
   function fire(inst) {
     for (const o of inst.overlays) {
       if (!o.fired && inst.t >= o.start - 1e-6) {
-        inst.st.setAnimation(o.track || 1, o.animation, !!o.loop);
+        const entry = inst.st.setAnimation(o.track == null ? 1 : o.track, o.animation, !!o.loop);
+        if (o.mix != null) entry.mixDuration = o.mix;
         o.fired = true;
       }
     }
+  }
+
+  // World transform of every requested bone AFTER constraints and physics:
+  // [x, y, rotation, scaleX, scaleY] per bone, flattened in `names` order.
+  function boneNames(sk, wanted) {
+    const all = sk.bones.map((b) => b.data.name);
+    if (!wanted || !wanted.length || wanted.indexOf("*") >= 0) return all;
+    for (const n of wanted) if (all.indexOf(n) < 0) throw new Error("bone not found: " + n);
+    return wanted;
+  }
+
+  function snapshot(sk, names) {
+    const out = [];
+    const r = (v) => Math.round(v * 1e3) / 1e3;
+    for (const n of names) {
+      const b = sk.findBone(n);
+      const p = b.appliedPose || b; // 4.3: BonePose, 4.2 and older: the bone itself
+      out.push(r(p.worldX), r(p.worldY), r(Math.atan2(p.c, p.a) * 180 / Math.PI),
+        r(Math.hypot(p.a, p.c)), r(Math.hypot(p.b, p.d)));
+    }
+    return out;
+  }
+
+  function drawDebug(sk, opts) {
+    const d = renderer.skeletonDebugRenderer;
+    const on = (k, def) => (opts[k] == null ? def : !!opts[k]);
+    d.drawBones = on("bones", true);
+    d.drawRegionAttachments = on("regions", false);
+    d.drawMeshHull = on("meshes", true);
+    d.drawMeshTriangles = on("triangles", true);
+    d.drawBoundingBoxes = on("bounding_boxes", true);
+    d.drawPaths = on("paths", true);
+    d.drawClipping = on("clipping", true);
+    if (S.Skeleton.prototype.setupPose) renderer.drawSkeletonDebug(sk);
+    else renderer.drawSkeletonDebug(sk, true);
   }
 
   function step(inst, dt) {
@@ -214,7 +260,8 @@
     // next(n) renders the next n frames and returns their PNG data URLs (so
     // big animations never travel as one huge message).
     // view: {cx, cy, worldW, worldH, pxW, pxH, outW, outH, background}
-    begin(times, fps, warmup, view) {
+    // opts: {track: [bone names] | null, debug: {bones, meshes, ...} | null}
+    begin(times, fps, warmup, view, opts) {
       canvas.width = view.pxW;
       canvas.height = view.pxH;
       gl.viewport(0, 0, view.pxW, view.pxH);
@@ -227,6 +274,8 @@
       const inst = instance();
       const dur = cfg.animation ? data.findAnimation(cfg.animation).duration : 0;
       if (warmup > 0 && dur > 0) advance(inst, warmup * dur, fps);
+      inst.t0 = inst.t;
+      inst.events.length = 0;
       let small = null, sctx = null;
       // Supersampling: draw at pxW x pxH, downscale in a 2D canvas (the
       // browser resamples premultiplied, so edges stay clean) and encode
@@ -239,7 +288,11 @@
         sctx.imageSmoothingEnabled = true;
         sctx.imageSmoothingQuality = "high";
       }
-      this._job = { inst, times, fps, i: 0, t: 0, view, small, sctx, bg: view.background || [0, 0, 0, 0] };
+      const o = opts || {};
+      this._job = {
+        inst, times, fps, i: 0, t: 0, view, small, sctx, bg: view.background || [0, 0, 0, 0],
+        debug: o.debug || null, names: o.track ? boneNames(inst.sk, o.track) : null, samples: [],
+      };
       return times.length;
     },
 
@@ -255,7 +308,9 @@
         gl.clear(gl.COLOR_BUFFER_BIT);
         renderer.begin();
         renderer.drawSkeleton(j.inst.sk, -1, -1);
+        if (j.debug) drawDebug(j.inst.sk, j.debug);
         renderer.end();
+        if (j.names) j.samples.push(snapshot(j.inst.sk, j.names));
         if (j.small) {
           j.sctx.clearRect(0, 0, j.view.outW, j.view.outH);
           j.sctx.drawImage(canvas, 0, 0, j.view.outW, j.view.outH);
@@ -265,6 +320,30 @@
         }
       }
       return out;
+    },
+
+    // Bone samples and fired events of the render started by begin().
+    finish() {
+      const j = this._job;
+      return { bones: j.names, frames: j.samples, events: j.inst.events };
+    },
+
+    // Same as a render without drawing: bone world transforms per time.
+    sample(times, fps, warmup, wanted) {
+      const inst = instance();
+      const dur = cfg.animation ? data.findAnimation(cfg.animation).duration : 0;
+      if (warmup > 0 && dur > 0) advance(inst, warmup * dur, fps);
+      inst.t0 = inst.t;
+      inst.events.length = 0;
+      const names = boneNames(inst.sk, wanted);
+      const frames = [];
+      let t = 0;
+      for (const target of times) {
+        advance(inst, target - t, fps);
+        t = target;
+        frames.push(snapshot(inst.sk, names));
+      }
+      return { bones: names, frames, events: inst.events };
     },
   };
   window.spineMcpReady = true;

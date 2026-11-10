@@ -10,7 +10,7 @@ from ..spine import attachments as att
 from ..spine import constraints as cons
 from ..spine import document as doc
 from ..spine.validator import validate_data
-from ._common import drop_none, editing, mcp, resolve
+from ._common import READ_ONLY, drop_none, editing, mcp, resolve
 
 # ------------------------------------------------------------------ files
 
@@ -46,7 +46,7 @@ def create_skeleton(
     return {"skeleton": str(path), "spine_version": data["skeleton"]["spine"]}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def inspect_skeleton(
     skeleton: str,
     section: Literal["summary", "full", "bones", "slots", "constraints", "skins", "events", "animations"] = "summary",
@@ -64,7 +64,7 @@ def inspect_skeleton(
     return {section: data.get(section) or ([] if section != "events" else {})}
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def validate_skeleton(skeleton: str) -> dict:
     """Check a skeleton JSON against the Spine 4.3 reader rules (references,
     required fields, enums, weighted vertices, curves, draw order offsets...).
@@ -72,7 +72,7 @@ def validate_skeleton(skeleton: str) -> dict:
     return validate_data(doc.load(resolve(skeleton))).as_dict()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def get_element(
     skeleton: str,
     kind: Literal["bone", "slot", "constraint", "skin", "attachment", "animation", "event"],

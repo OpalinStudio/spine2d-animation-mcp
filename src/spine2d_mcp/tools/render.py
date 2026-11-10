@@ -19,18 +19,21 @@ phone) and `export_game_pack` (runtime files from the editor, with checks).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Literal
 
+from mcp.server.fastmcp import Image
+
 from ..cli import spine_cli as cli
 from ..cli.editor_render import editor_render as _editor_render
 from ..runtime import fetch
 from ..runtime import render as rt_render
 from ..runtime.web_preview import export_web_preview as _export_web_preview
-from ._common import mcp, resolve
+from ._common import READ_ONLY, mcp, resolve
 
 
 @mcp.tool()
@@ -50,7 +53,7 @@ def spine_runtime_setup(version: str | None = None, install_browser: bool = True
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READ_ONLY)
 def runtime_validate(
     skeleton: str,
     atlas: str | None = None,
@@ -72,11 +75,22 @@ def runtime_validate(
     return rt_render.validate(skeleton, atlas, skin, animation, runtime_version=runtime_version)
 
 
-@mcp.tool()
+def _with_image(res: dict, preview: Path) -> list:
+    """Tool result = the JSON report + the picture itself, so the assistant
+    SEES what it made instead of trusting a file path."""
+    res.pop("preview", None)
+    try:
+        data = preview.read_bytes()
+    finally:
+        preview.unlink(missing_ok=True)
+    return [res, Image(data=data, format="jpeg")]
+
+
+@mcp.tool(structured_output=False)
 def runtime_render(
     skeleton: str,
     output: str,
-    format: Literal["png", "frames", "sheet", "gif", "apng", "webp", "mp4", "webm", "mov"] = "gif",
+    format: Literal["png", "frames", "sheet", "onion", "gif", "apng", "webp", "mp4", "webm", "mov"] = "gif",
     animation: str | None = None,
     skin: str | None = None,
     time: float | None = None,
@@ -97,14 +111,27 @@ def runtime_render(
     runtime_version: str | None = None,
     overlays: list[dict] | None = None,
     loop: bool = True,
-) -> dict:
+    mix: float = 0,
+    times: list[float] | None = None,
+    debug: bool | dict | None = None,
+    track_bones: list[str] | None = None,
+    ghosts: int = 8,
+    return_image: bool = True,
+):
     """Render with the OFFICIAL Spine web runtime (what the game will show,
-    physics and clipping included), in seconds, without the editor.
+    physics and clipping included), in seconds, without the editor. The
+    result carries the picture (return_image): LOOK at it and fix what is
+    wrong before going on. For an animated format the picture is a contact
+    sheet of the same frames.
 
     format: png (one frame at `time`, setup pose without animation), frames
-    (folder of PNGs), sheet (contact sheet, checkerboard = transparency),
-    gif, apng / webp (full alpha), mp4 (no alpha, on `background`), webm
-    (VP9 + alpha), mov (ProRes 4444 + alpha for After Effects).
+    (folder of PNGs), sheet (contact sheet, checkerboard = transparency; the
+    way to review an animation pose by pose), onion (ONE still of the whole
+    motion: `ghosts` frames stacked from faint to opaque, plus the path of
+    each `track_bones` bone with a dot per frame: dot spacing = timing, the
+    curve = the arc), gif, apng / webp (full alpha), mp4 (no alpha, on
+    `background`), webm (VP9 + alpha), mov (ProRes 4444 + alpha for After
+    Effects).
     Size: `scale` pixels per skeleton unit, or `width` and/or `height` to fit
     (exact canvas when both are given); for a sheet they size each cell
     (default 256 px wide). The framing is the union of the
@@ -115,17 +142,74 @@ def runtime_render(
     at 2x then downscaled for clean edges. runtime_version: default = the
     data's major.minor (a 4.2 export renders with the 4.2 runtime). Returns
     the output path, size, frames, world bounds and what the runtime loaded.
-    overlays: other animations on other tracks, set when the playhead reaches
-    `start` like a game state machine does, e.g. [{"track": 1, "animation":
-    "blink", "start": 1.2}, {"track": 1, "animation": "blink", "start": 4.0}].
+    times: explicit capture times in seconds instead of every frame (the key
+    poses: contact, passing, impact...).
+    overlays: other animations set when the playhead reaches `start`, like a
+    game state machine does. Track 1+ layers on top: [{"track": 1,
+    "animation": "blink", "start": 1.2}]. Track 0 REPLACES the main animation,
+    to check a transition: animation="idle", overlays=[{"track": 0,
+    "animation": "walk", "start": 1.0, "loop": true, "mix": 0.2}],
+    duration=2. mix: default crossfade in seconds between the animations of
+    a track (AnimationStateData.defaultMix in the game).
     `duration` sets the length of the capture (default: the main animation).
     loop=False plays the main animation once and holds its last pose (one-shot
-    actions, blink) instead of restarting it when `duration` is longer."""
-    return rt_render.render(
-        skeleton, output, format=format, animation=animation, skin=skin, time=time, fps=fps,
-        duration=duration, loops=loops, scale=scale, width=width, height=height, padding=padding,
-        background=background, supersample=supersample, warmup=warmup, atlas=atlas, crop=crop,
-        columns=columns, matte=matte, runtime_version=runtime_version, overlays=overlays, loop=loop,
+    actions, blink) instead of restarting it when `duration` is longer.
+    debug: true, or {"bones", "meshes", "triangles", "regions", "clipping",
+    "paths", "bounding_boxes": bool}, draws the rig over the art (bones,
+    mesh hulls and triangles, clipping polygons, paths, hit boxes) to check
+    pivots, weights and masks. track_bones: bones whose world position /
+    rotation / scale per frame are returned in `tracks` (after IK and
+    physics); events fired during the capture are returned in `events`."""
+    preview = None
+    if return_image:
+        fd, name = tempfile.mkstemp(prefix="spine-mcp-preview-", suffix=".jpg")
+        os.close(fd)
+        preview = Path(name)
+    try:
+        res = rt_render.render(
+            skeleton, output, format=format, animation=animation, skin=skin, time=time, fps=fps,
+            duration=duration, loops=loops, scale=scale, width=width, height=height, padding=padding,
+            background=background, supersample=supersample, warmup=warmup, atlas=atlas, crop=crop,
+            columns=columns, matte=matte, runtime_version=runtime_version, overlays=overlays, loop=loop,
+            mix=mix, times=times, debug=debug, track_bones=track_bones, ghosts=ghosts,
+            preview=str(preview) if preview else None,
+        )
+    except BaseException:
+        if preview:
+            preview.unlink(missing_ok=True)
+        raise
+    return _with_image(res, preview) if preview else res
+
+
+@mcp.tool(annotations=READ_ONLY)
+def runtime_sample(
+    skeleton: str,
+    animation: str,
+    bones: list[str] | None = None,
+    fps: float = 30,
+    duration: float | None = None,
+    warmup: float = 0,
+    skin: str | None = None,
+    atlas: str | None = None,
+    overlays: list[dict] | None = None,
+    loop: bool = True,
+    mix: float = 0,
+    times: list[float] | None = None,
+    runtime_version: str | None = None,
+) -> dict:
+    """Measure an animation instead of looking at it: world x, y, rotation,
+    scaleX, scaleY of `bones` (default: all) at every frame (or at `times`),
+    as the OFFICIAL runtime computes them, IK / transform / path / physics
+    constraints included, plus the events fired. Use it to check numbers a
+    picture can't give: does the foot stay at the same height during its
+    contact, how far does the hand travel, does the last frame equal the
+    first, when exactly does the impact happen. Same warmup / overlays / mix /
+    loop options as runtime_render. The last sample is at the animation's
+    duration (the loop point)."""
+    return rt_render.sample(
+        skeleton, animation, bones, fps=fps, duration=duration, warmup=warmup, skin=skin,
+        atlas=atlas, overlays=overlays, loop=loop, mix=mix, times=times,
+        runtime_version=runtime_version,
     )
 
 
