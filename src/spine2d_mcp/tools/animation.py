@@ -215,6 +215,11 @@ PRESET_HELP = {
     "fade_out": "alpha 1 -> 0 (slots, duration)",
     "pulse": "alpha pulse (slots, duration, times)",
     "tint": "color tint and back (slots, duration, color)",
+    "symbol_idle": "slot symbol at rest, seamless loop: breathe + float + sway (bone, duration, breathe, float_height, sway)",
+    "symbol_land": "slot symbol landing at reel stop: drop, squash on impact, rebound, settle (bone, duration, drop, squash, rebound)",
+    "symbol_win": "winning symbol: squeeze, pop with overshoot, jelly wobble, settle; loops (bone, duration, pop, anticipation, wiggle, hop, flash_slots, flash_color, glow_slots)",
+    "symbol_anticipation": "tease / near-win loop: fast tremble + heartbeat swell (bone, duration, tremble, frequency, swell, beats)",
+    "symbol_dim": "darken non-winning symbols then hold (slots = all by default, duration, amount, alpha)",
 }
 
 
@@ -225,6 +230,7 @@ def generate_animation(
         "idle", "walk", "run", "jump", "wave", "nod", "head_shake", "head_tilt", "blink",
         "hover", "bounce", "shake", "oscillate", "follow_through", "flash", "fade_in",
         "fade_out", "pulse", "tint",
+        "symbol_idle", "symbol_land", "symbol_win", "symbol_anticipation", "symbol_dim",
     ],
     animation: str | None = None,
     params: dict | None = None,
@@ -236,12 +242,22 @@ def generate_animation(
     params.roles = {"arm_left": "my-bone", ...}. Roles: hip, torso, chest,
     neck, head, arm_/forearm_/hand_/leg_/shin_/foot_ left|right, eye_left,
     eye_right, eyes, tail. mode "merge" adds to an existing animation (layer
-    a blink over an idle...). See PRESET_HELP via spine_reference("presets")."""
+    a blink over an idle...). Slot-game symbol presets (symbol_idle, symbol_land,
+    symbol_win, symbol_anticipation, symbol_dim) animate params.bone (default:
+    the only child of root, else root; on a reel-cell tile whose container
+    also holds the background / frame / cell mask (slots named fond, bg,
+    frame, cadre, case, cell...), the character bone under it, so the frame
+    stays in its cell; the result lists `warnings` when the animated bone
+    still moves tile slots) and start/end on the setup pose so they
+    chain at runtime. See PRESET_HELP via spine_reference("presets")."""
     p = dict(params or {})
-    name = animation or preset
+    # Slot presets default to the names games expect: idle, land, win...
+    name = animation or (preset[len("symbol_"):] if preset.startswith("symbol_") else preset)
     with editing(skeleton) as ed:
         d = ed.data
-        if preset in ("idle", "walk", "run", "jump", "wave"):
+        if preset in gen.SLOT_PRESETS:
+            res = gen.SLOT_PRESETS[preset](d, name=name, mode=mode, **p)
+        elif preset in ("idle", "walk", "run", "jump", "wave"):
             fn = getattr(gen, preset)
             res = fn(d, name=name, mode=mode, **p)
         elif preset in ("nod", "head_shake", "head_tilt"):

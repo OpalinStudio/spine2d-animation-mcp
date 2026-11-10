@@ -1,6 +1,6 @@
 [project]
 name = "spine2d-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server to rig, animate, preview and export Spine 4.3 skeletons (macOS, Windows, Linux)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,6 +10,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "rectpack>=0.2.2",
     "pydantic>=2.6.0",
+    "playwright>=1.64.1",
 ]
 
 [project.scripts]

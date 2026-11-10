@@ -264,7 +264,7 @@ def png_export_settings(
     skin: str | None = None,
     scale: float = 100,
     fps: float = 30,
-    background: str | None = None,
+    background: str | dict | None = None,
     pack_atlas: bool = False,
     **extra: Any,
 ) -> dict:
@@ -306,6 +306,96 @@ def png_export_settings(
         settings["packAtlas"] = pack_settings(premultiplyAlpha=True)
     settings.update(extra)
     return settings
+
+
+# Image / video export classes accepted by the 4.3 editor, checked against
+# Spine 4.3.26 on macOS (`Spine -i coin-pro.spine -o out -e settings.json`):
+# png / jpeg / webp write one file per frame (`-o` is a path prefix), gif /
+# apng / webm / mov / avi write one file (`-o` is the file). PSD, MP4 and the
+# HTML export are not accepted from the CLI by that build.
+EDITOR_IMAGE_FORMATS: dict[str, dict[str, Any]] = {
+    "png": {"class": "export-png", "sequence": True, "ext": ".png"},
+    "jpeg": {"class": "export-jpeg", "sequence": True, "ext": ".jpg"},
+    "webp": {"class": "export-webp", "sequence": True, "ext": ".webp"},
+    "gif": {"class": "export-gif", "sequence": False, "ext": ".gif"},
+    "apng": {"class": "export-apng", "sequence": False, "ext": ".png"},
+    "webm": {"class": "export-webm", "sequence": False, "ext": ".webm"},
+    "mov": {"class": "export-mov", "sequence": False, "ext": ".mov"},
+    "avi": {"class": "export-avi", "sequence": False, "ext": ".avi"},
+}
+
+
+def image_export_settings(
+    kind: str,
+    skeleton: str,
+    animation: str | None = None,
+    skin: str | None = None,
+    scale: float = 100,
+    fps: float = 30,
+    background: str | None = None,
+    transparent: bool = True,
+    max_bounds: bool = True,
+    last_frame: bool = False,
+    warm_up: int = 0,
+    repeat: int = 1,
+    pause: float = 0,
+    fit_width: int = 0,
+    fit_height: int = 0,
+    pad: bool = False,
+    smoothing: int = 8,
+    msaa: int = 4,
+    quality: int = 100,
+    export_type: str = "animation",
+    **extra: Any,
+) -> dict:
+    """Editor image/video export settings for `kind` in EDITOR_IMAGE_FORMATS.
+
+    Base fields come from the official png example (spine-runtimes
+    examples/export); the GIF fields (`colors`, `transparency`) were found by
+    running the 4.3.26 CLI, which rejects `maxColors` alone and a null
+    background without `transparency`. `background` is "rrggbb[aa]" or None
+    (transparent). `export_type` "animation" or "pose" (current pose)."""
+    if kind not in EDITOR_IMAGE_FORMATS:
+        raise ValueError(f"format must be one of {sorted(EDITOR_IMAGE_FORMATS)}")
+    bg = None
+    if background:
+        h = background.lstrip("#").lower()
+        if len(h) == 6:
+            h += "ff"
+        # The 4.3.26 editor reads a libgdx Color object here, not a hex string
+        # ("Unable to convert value to required type: background").
+        bg = {k: round(int(h[i:i + 2], 16) / 255, 4) for k, i in (("r", 0), ("g", 2), ("b", 4), ("a", 6))}
+    s = png_export_settings(skeleton, animation, skin, scale, fps, background=bg)
+    s.update({
+        "class": EDITOR_IMAGE_FORMATS[kind]["class"],
+        "exportType": export_type,
+        "maxBounds": max_bounds,
+        "lastFrame": last_frame,
+        "fitWidth": fit_width,
+        "fitHeight": fit_height,
+        "pad": pad,
+        "smoothing": smoothing,
+        "msaa": msaa,
+        "quality": quality,
+        "compression": 9,
+        "speed": 1,
+        "bruteForce": True,
+        "quantize": False,
+        "warmUp": warm_up,
+        "repeat": repeat,
+        "pause": pause,
+        "transparent": transparent and bg is None,
+    })
+    if kind == "gif":
+        s.update({
+            "colors": 256, "maxColors": 256, "dither": 0, "alphaDither": 0,
+            "alphaThreshold": 128, "quality": 10, "forever": True,
+            "transparency": bg is None or transparent,
+        })
+    if kind in ("apng", "webm", "mov", "avi"):
+        s["forever"] = True
+    s.update(extra)
+    return s
 
 
 def write_settings(settings: dict, path: str | Path | None = None) -> Path:
@@ -365,32 +455,48 @@ def import_data(
     project: str,
     skeleton_name: str | None = None,
     scale: float | None = None,
-    animation: str | None = None,
+    animation: str | Sequence[str] | None = None,
     import_animations: bool = False,
     merge: bool = False,
     extra_args: Iterable[str] = (),
     spine_path: str | None = None,
     version_: str | None = None,
     timeout: float = 900,
+    from_skeleton: str | None = None,
+    replace: bool = False,
 ) -> CliResult:
     """Import JSON/binary/project data into a .spine project (created if it
-    doesn't exist): `Spine -i <data> -o <project.spine> -r [name]`.
+    doesn't exist). Spine 4.3 syntax (`Spine --advanced`):
 
-    4.3 additions: `animation` / `import_animations` (`-a [name]`, import one
-    or all animations into an existing skeleton) and `merge` (`--merge`)."""
-    args = ["-i", _abs(input_path), "-o", _abs(project)]
+        Spine -i <data> [-s <scale>] -o <project.spine>
+              [--from <name>] [--to <name>] [-a [<name>]]... [--merge] [--replace] -r
+
+    skeleton_name -> `--to` (destination skeleton, merged if it exists),
+    from_skeleton -> `--from` (needed when the input holds several
+    skeletons), animation (one name or a list) / import_animations -> `-a`,
+    merge -> `--merge`, replace -> `--replace` (overwrite the existing
+    skeleton / attachments / animation instead of creating `name2`...).
+    `-r` (perform the import) always comes last."""
+    args = ["-i", _abs(input_path)]
     if scale is not None:
         args += ["-s", str(scale)]
-    if animation or import_animations:
-        # Target skeleton in the project, then the animation(s) to import.
-        if skeleton_name:
-            args += ["-r", skeleton_name]
-        args += ["-a"] + ([animation] if animation else [])
-    else:
-        args += ["-r"] + ([skeleton_name] if skeleton_name else [])
+    args += ["-o", _abs(project)]
+    if from_skeleton:
+        args += ["--from", from_skeleton]
+    if skeleton_name:
+        args += ["--to", skeleton_name]
+    names = [animation] if isinstance(animation, str) else list(animation or [])
+    if names:
+        for n in names:
+            args += ["-a", n]
+    elif import_animations:
+        args.append("-a")
     if merge:
         args.append("--merge")
+    if replace:
+        args.append("--replace")
     args += list(extra_args)
+    args.append("-r")
     return run(args, spine_path=spine_path, version=version_, timeout=timeout)
 
 
