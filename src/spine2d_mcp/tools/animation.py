@@ -244,7 +244,11 @@ def generate_animation(
     eye_right, eyes, tail. mode "merge" adds to an existing animation (layer
     a blink over an idle...). Slot-game symbol presets (symbol_idle, symbol_land,
     symbol_win, symbol_anticipation, symbol_dim) animate params.bone (default:
-    the only child of root, else root) and start/end on the setup pose so they
+    the only child of root, else root; on a reel-cell tile whose container
+    also holds the background / frame / cell mask (slots named fond, bg,
+    frame, cadre, case, cell...), the character bone under it, so the frame
+    stays in its cell; the result lists `warnings` when the animated bone
+    still moves tile slots) and start/end on the setup pose so they
     chain at runtime. See PRESET_HELP via spine_reference("presets")."""
     p = dict(params or {})
     # Slot presets default to the names games expect: idle, land, win...

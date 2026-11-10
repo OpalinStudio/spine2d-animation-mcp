@@ -564,19 +564,27 @@ def add_ik_constraint(
     scale_y: Literal["none", "uniform", "volume"] = "none",
     skin_required: bool = False,
     index: int | None = None,
+    orient_to_child: bool = False,
 ) -> dict:
     """IK constraint on 1 or 2 bones (arm/leg/aim). With create_target=true a
     target bone is created at the chain's end (bone tip or first child),
-    parented to target_parent (default root). 4.3 scale_y: with
+    parented to target_parent (default root). Spine solves for the bone TIP:
+    if the last bone has no length, pass orient_to_child=true to rotate and
+    lengthen it toward its first child (wrist) first; children, attachments
+    and weights keep their setup pose (otherwise `warnings` explains the
+    broken elbow). 4.3 scale_y: with
     compress/stretch, "uniform" keeps the aspect ratio, "volume" squashes and
     stretches preserving area."""
+    warnings: list[str] = []
     with editing(skeleton) as ed:
         if create_target:
             res = cons.ik_for_chain(ed.data, bones, target_name=target, target_parent=target_parent,
-                                    constraint_name=name, bend_positive=bend_positive, mix=mix,
+                                    constraint_name=name, bend_positive=bend_positive,
+                                    orient_to_child=orient_to_child, mix=mix,
                                     softness=softness, compress=compress, stretch=stretch,
                                     scale_y=scale_y, skin=skin_required)
             c = res["constraint"]
+            warnings = res["warnings"]
             if index is not None:
                 doc.move_constraint(ed.data, c["name"], index, "ik")
         else:
@@ -585,7 +593,10 @@ def add_ik_constraint(
             c = cons.ik(name or f"{bones[-1]}-ik", bones, target, mix, softness, bend_positive,
                         compress, stretch, scale_y, skin_required)
             doc.add_constraint(ed.data, c, index)
-    return ed.result(constraint=c)
+    out = ed.result(constraint=c)
+    if warnings:
+        out["warnings"] = warnings + out.get("warnings", [])
+    return out
 
 
 @mcp.tool()
