@@ -384,11 +384,34 @@ def bind_mesh_weights(
 ) -> dict:
     """Bind an unweighted mesh (or bounding box / clipping / path) to bones
     with automatic weights based on distance to each bone segment (setup
-    pose). Like the editor's Auto weights; refine weights in Spine if needed."""
+    pose). Like the editor's Auto weights; refine weights in Spine if needed.
+
+    Existing deform keys of this attachment (any animation) are converted to
+    the weighted layout, one offset per bone influence in that bone's space,
+    so the setup pose of every key looks the same (as the editor does);
+    `deform_converted` counts them. Bind before keying deform when possible:
+    once bones move, each influence's offset follows its own bone."""
+    converted = 0
     with editing(skeleton) as ed:
         a = doc.get_attachment(ed.data, slot, attachment, skin)
+        old_len = len(a.get("vertices") or [])
         a["vertices"] = att.auto_weights(ed.data, slot, a, bones, max_influences, falloff)
-    return ed.result(attachment=attachment, bones=bones)
+        for anim in (ed.data.get("animations") or {}).values():
+            tl = ((((anim.get("attachments") or {}).get(skin) or {}).get(slot) or {})
+                  .get(attachment) or {})
+            for k in tl.get("deform") or []:
+                full = [0.0] * int(k.get("offset", 0)) + [float(v) for v in k.get("vertices") or []]
+                full += [0.0] * (old_len - len(full))
+                conv = [att._r(v) for v in att.weighted_deform(ed.data, slot, a["vertices"], full)]
+                k.pop("offset", None)
+                k.pop("vertices", None)
+                nz = [i for i, v in enumerate(conv) if v != 0]
+                if nz:
+                    if nz[0]:
+                        k["offset"] = nz[0]
+                    k["vertices"] = conv[nz[0]:nz[-1] + 1]
+                converted += 1
+    return ed.result(attachment=attachment, bones=bones, deform_converted=converted)
 
 
 @mcp.tool()

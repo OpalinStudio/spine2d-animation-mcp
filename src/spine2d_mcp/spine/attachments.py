@@ -455,6 +455,39 @@ def auto_weights(
     return out
 
 
+def weighted_deform(data: dict, slot: str, weighted: Sequence[float], offsets: Sequence[float]) -> list[float]:
+    """Convert unweighted deform offsets (2 per vertex, in the slot bone's
+    space) to the weighted layout of `weighted` (2 per bone influence, each
+    in that bone's space), so the setup pose looks the same. Like the editor
+    when a mesh with deform keys gets weights: exact at setup pose; when the
+    bones move, each influence's offset follows its bone."""
+    from .pose import Pose
+
+    pose = Pose(data)
+    sb = pose.bones[next(s["bone"] for s in data["slots"] if s["name"] == slot)]
+    names = [b["name"] for b in data["bones"]]
+    out: list[float] = []
+    i = vi = 0
+    while i < len(weighted):
+        n = int(weighted[i])
+        i += 1
+        dx = offsets[vi * 2] if vi * 2 < len(offsets) else 0.0
+        dy = offsets[vi * 2 + 1] if vi * 2 + 1 < len(offsets) else 0.0
+        # World-space vector of the offset (linear part only).
+        wx, wy = sb.a * dx + sb.b * dy, sb.c * dx + sb.d * dy
+        for _ in range(n):
+            bs = pose.bones[names[int(weighted[i])]]
+            det = bs.a * bs.d - bs.b * bs.c
+            if abs(det) < 1e-12:
+                lx = ly = 0.0
+            else:
+                lx, ly = (wx * bs.d - wy * bs.b) / det, (wy * bs.a - wx * bs.c) / det
+            out += [lx, ly]
+            i += 4
+        vi += 1
+    return out
+
+
 def _seg_dist(p, a, b) -> float:
     ax, ay = a
     bx, by = b
