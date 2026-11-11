@@ -244,6 +244,34 @@ def _checker(size: tuple[int, int], tile: int = 12):
     return checker
 
 
+def _image_size(path: Path) -> list[int]:
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return list(im.size)
+
+
+def _looped_time_warnings(info, animation, time, times, loop, format) -> list[str]:
+    """A still asked after the end of a looping clip is taken at t mod duration:
+    a held pose (dim, land) then looks like its first frames. Say it."""
+    if not animation or not loop:
+        return []
+    asked = [t for t in ([time] if time is not None else []) + list(times or []) if t is not None]
+    if not asked:
+        return []
+    dur = next((a.get("duration") for a in (info or {}).get("animations", [])
+                if a.get("name") == animation), None)
+    if not dur:
+        return []
+    late = sorted({round(t, 4) for t in asked if t > dur + 1e-6})
+    if not late:
+        return []
+    shown = ", ".join(f"{t:g}s -> {t % dur:.3f}s" for t in late[:4])
+    return [f"'{animation}' lasts {dur:g}s and loops (loop=True): the frame(s) asked after its end "
+            f"are taken at time mod duration ({shown}{', ...' if len(late) > 4 else ''}). For a "
+            "held last pose (dim, land, one-shot) pass loop=False."]
+
+
 def _sheet(frames, times, out: Path, columns: int, background: str | None, label: bool) -> None:
     from PIL import Image, ImageDraw
 
@@ -452,8 +480,12 @@ def render(
                 img = frames[0] if not background else _flatten(frames[0], _rgba(background))
                 img.save(out)
             elif format == "sheet":
-                step = max(1, -(-len(frames) // max_sheet_frames))
-                _sheet(frames[::step], times[::step], out, columns, background, label)
+                step = max(1, -(-len(frames) // max(1, max_sheet_frames)))
+                cells = frames[::step]
+                _sheet(cells, times[::step], out, columns, background, label)
+                sheet_info = {"sheet_frames": len(cells), "sheet_step": step,
+                              "sheet_fps": round(fps / step, 4) if not req["times"] else None,
+                              "sheet_size": _image_size(out)}
             elif format == "onion":
                 _onion(frames, times, out, background, ghosts, tracks, res.get("view", {}))
             elif format == "gif":
@@ -473,6 +505,14 @@ def render(
             _write_preview(frames, times, format, out, Path(preview), background)
     view = res.get("view", {})
     warnings = []
+    if format == "sheet" and sheet_info["sheet_step"] > 1:
+        warnings.append(
+            f"the sheet shows {sheet_info['sheet_frames']} of {len(times)} rendered frames "
+            f"(1 frame in {sheet_info['sheet_step']}"
+            + (f", {sheet_info['sheet_fps']:g} fps instead of {fps:g}" if sheet_info["sheet_fps"] else "")
+            + f"): motion faster than half that rate (tremble, shake) is aliased. Raise "
+            f"max_sheet_frames (now {max_sheet_frames}), or use format='gif' / 'frames'.")
+    warnings += _looped_time_warnings(res.get("info"), animation, time, req["times"], loop, format)
     if not background and format not in ("mp4",):
         additive = []
         if sk.suffix.lower() == ".json":
@@ -503,6 +543,7 @@ def render(
         "runtime": f"spine-webgl {rt.version}",
         "skeleton_info": res.get("info"),
         **({"times": [round(t, 4) for t in times]} if req["times"] else {}),
+        **(sheet_info if format == "sheet" else {}),
         **({"tracks": tracks} if tracks else {}),
         **({"events": samples["events"]} if samples.get("events") else {}),
         **({"preview": str(preview)} if preview else {}),

@@ -117,6 +117,7 @@ def runtime_render(
     track_bones: list[str] | None = None,
     ghosts: int = 8,
     return_image: bool = True,
+    max_sheet_frames: int = 24,
 ):
     """Render with the OFFICIAL Spine web runtime (what the game will show,
     physics and clipping included), in seconds, without the editor. The
@@ -159,7 +160,12 @@ def runtime_render(
     mesh hulls and triangles, clipping polygons, paths, hit boxes) to check
     pivots, weights and masks. track_bones: bones whose world position /
     rotation / scale per frame are returned in `tracks` (after IK and
-    physics); events fired during the capture are returned in `events`."""
+    physics); events fired during the capture are returned in `events`.
+    max_sheet_frames: a sheet keeps at most this many cells (every n-th frame
+    beyond it); the result gives sheet_frames / sheet_step / sheet_fps /
+    sheet_size and warns when frames were skipped (a fast tremble is then
+    aliased). A still asked after the end of a looping clip warns too (the
+    runtime shows time mod duration; pass loop=False for a held pose)."""
     preview = None
     if return_image:
         fd, name = tempfile.mkstemp(prefix="spine-mcp-preview-", suffix=".jpg")
@@ -172,7 +178,7 @@ def runtime_render(
             background=background, supersample=supersample, warmup=warmup, atlas=atlas, crop=crop,
             columns=columns, matte=matte, runtime_version=runtime_version, overlays=overlays, loop=loop,
             mix=mix, times=times, debug=debug, track_bones=track_bones, ghosts=ghosts,
-            preview=str(preview) if preview else None,
+            max_sheet_frames=max_sheet_frames, preview=str(preview) if preview else None,
         )
     except BaseException:
         if preview:

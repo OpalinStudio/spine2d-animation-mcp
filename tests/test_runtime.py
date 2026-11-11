@@ -274,3 +274,40 @@ def test_analyze_animation_tool_merges_keys_and_runtime_review(runtime_ok, walke
         2 * 185 * 0.4226 / 0.55, rel=0.05)
     everything = quality.analyze_animation(walker, runtime=False)
     assert [a["animation"] for a in everything["animations"]] == ["high", "low", "walk"]
+
+
+# ------------------------------------------- honest sheets and looped stills
+def test_sheet_reports_skipped_frames_and_its_real_size(runtime_ok, rig, tmp_path):
+    from PIL import Image
+
+    out = tmp_path / "s30.png"
+    res = rr.render(rig, str(out), format="sheet", animation="win", fps=30, width=120)
+    assert res["frames"] == 36  # rendered frames, unchanged
+    assert res["sheet_frames"] == 18 and res["sheet_step"] == 2
+    assert res["sheet_fps"] == pytest.approx(15)
+    with Image.open(out) as im:
+        assert list(im.size) == res["sheet_size"] and res["size"] == [120, res["size"][1]]
+    assert any("18 of 36" in w for w in res.get("warnings", []))
+    full = rr.render(rig, str(tmp_path / "s30full.png"), format="sheet", animation="win", fps=30,
+                     width=60, max_sheet_frames=36)
+    assert full["sheet_frames"] == 36 and full["sheet_step"] == 1
+    assert not any("of 36" in w for w in full.get("warnings", []))
+
+
+def test_png_after_the_end_of_a_looping_clip_warns(runtime_ok, rig, tmp_path):
+    res = rr.render(rig, str(tmp_path / "a.png"), format="png", animation="win", time=5.0, width=80)
+    assert any("loop=False" in w for w in res.get("warnings", []))
+    held = rr.render(rig, str(tmp_path / "b.png"), format="png", animation="win", time=5.0,
+                     width=80, loop=False)
+    assert not any("loop=False" in w for w in held.get("warnings", []))
+    inside = rr.render(rig, str(tmp_path / "c.png"), format="png", animation="win", time=0.5, width=80)
+    assert not any("loop=False" in w for w in inside.get("warnings", []))
+
+
+def test_runtime_render_tool_exposes_max_sheet_frames():
+    import inspect
+
+    from spine2d_mcp.tools import render as tr
+
+    fn = getattr(tr.runtime_render, "fn", tr.runtime_render)
+    assert inspect.signature(fn).parameters["max_sheet_frames"].default == 24
