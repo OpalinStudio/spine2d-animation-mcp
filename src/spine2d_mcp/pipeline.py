@@ -66,14 +66,27 @@ def import_psd_to_spine(
         data["skeleton"]["images"] = "./images/"
 
     added: list[str] = []
+    # (upper, lower, end): a real 2-bone chain when the PSD has the middle
+    # segment (knee / elbow), else the limb + its extremity.
     chains = []
     if ik_legs:
-        chains += [("leg_left", "foot_left"), ("leg_right", "foot_right")]
+        chains += [("leg_left", "shin_left", "foot_left"), ("leg_right", "shin_right", "foot_right")]
     if ik_arms:
-        chains += [("arm_left", "hand_left"), ("arm_right", "hand_right")]
-    for upper, lower in chains:
-        if doc.has_bone(data, upper) and doc.has_bone(data, lower):
-            res = ik_for_chain(data, [upper, lower], bend_positive=upper.startswith("leg"))
+        chains += [("arm_left", "forearm_left", "hand_left"), ("arm_right", "forearm_right", "hand_right")]
+    for upper, middle, end in chains:
+        leg = upper.startswith("leg")
+        if doc.has_bone(data, upper) and doc.has_bone(data, middle):
+            # Knees bend forward, elbows backward (character facing +x).
+            res = ik_for_chain(data, [upper, middle], bend_positive=not leg)
+            added.append(res["constraint"]["name"])
+            if leg and doc.has_bone(data, end):
+                # The foot keeps its own angle while the knee bends.
+                from .spine.pose import Pose
+
+                doc.update_bone(data, end, inherit="noRotationOrReflection",
+                                rotation=round(Pose(data).bones[end].world_rotation, 4))
+        elif doc.has_bone(data, upper) and doc.has_bone(data, end):
+            res = ik_for_chain(data, [upper, end], bend_positive=leg)
             added.append(res["constraint"]["name"])
 
     for preset in animations:
