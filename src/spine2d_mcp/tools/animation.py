@@ -364,7 +364,7 @@ PRESET_HELP = {
     "symbol_idle": "slot symbol at rest, seamless loop: breathe + float + sway (bone, duration, breathe, float_height, sway)",
     "symbol_land": "slot symbol landing at reel stop: drop, squash on impact, rebound, settle (bone, duration, drop, squash, rebound)",
     "symbol_win": "winning symbol: squeeze, pop with overshoot, jelly wobble, settle; loops (bone, duration, pop, anticipation, wiggle, hop, flash_slots, flash_color, glow_slots)",
-    "symbol_anticipation": "tease / near-win loop: fast tremble + heartbeat swell (bone, duration, tremble, frequency, swell, beats)",
+    "symbol_anticipation": "tease / near-win loop: fast tremble + heartbeat swell (bone, duration, tremble, frequency (default 10 Hz), swell, beats, display_fps: game frame rate, default 30; the tremble snaps to display_fps/n, n >= 3, e.g. 14 -> 10 Hz, so it does not beat against the frames; null = keep frequency)",
     "symbol_dim": "darken non-winning symbols then hold (slots = all by default, duration, amount, alpha)",
 }
 

@@ -1130,15 +1130,36 @@ def symbol_win(
 
 def symbol_anticipation(
     data: dict, bone: str | None = None, name: str = "anticipation", duration: float = 1.0,
-    tremble: float = 2.5, frequency: float = 14.0, swell: float = 0.06, beats: int = 2,
-    mode: str = "replace",
+    tremble: float = 2.5, frequency: float = 10.0, swell: float = 0.06, beats: int = 2,
+    mode: str = "replace", display_fps: float | None = 30,
 ) -> dict:
     """Tease / near-win loop (e.g. 2 scatters landed, waiting for the 3rd):
     a fast tremble plus a heartbeat-like swell. The tremble frequency is
-    rounded so the loop is seamless."""
+    rounded so the loop is seamless and, with `display_fps` (the game's frame
+    rate, default 30), snapped to display_fps / n with n >= 3 frames per
+    cycle (10 Hz at 30 fps, also clean at 60 fps). Any other frequency beats
+    against the frame rate: 14 Hz at 30 fps fades to nothing every 0.5 s.
+    display_fps=None keeps the requested frequency as is."""
     b = symbol_bone(data, bone)
     _anim(data, name, mode)
+    warnings: list[str] = []
     cycles = max(1, round(frequency * duration))
+    per_cycle = None
+    if display_fps:
+        snapped = _tremble_cycles(frequency, duration, display_fps)
+        if snapped is None:
+            warnings.append(
+                f"duration {duration} s is not a whole number of frames at {display_fps} fps "
+                f"(or has no divisor >= 3): tremble kept at {cycles / duration:g} Hz and may "
+                f"beat against the frame rate; use a duration on the frame grid (e.g. 1.0 s)")
+        else:
+            cycles, per_cycle = snapped
+            hz = cycles / duration
+            if abs(hz - frequency) > 1e-6:
+                warnings.append(
+                    f"tremble frequency {frequency:g} Hz -> {hz:g} Hz ({per_cycle} frames per cycle "
+                    f"at {display_fps:g} fps): {frequency:g} Hz beats against the frame rate and "
+                    f"the tremble would fade out periodically")
     keyed = []
     if tremble:
         oscillate(data, name, b, "rotate", amplitude=tremble, period=duration / cycles, duration=duration)
@@ -1147,8 +1168,35 @@ def symbol_anticipation(
         oscillate(data, name, b, "scale", amplitude=swell / 2, period=duration / max(1, beats),
                   duration=duration, base=1 + swell / 2, phase=-90)
         keyed.append(f"{b}.scale")
-    return _with_warnings(data, {"animation": name, "duration": duration, "bone": b, "tremble_hz": cycles / duration,
-            "keyed": keyed, "loop": True})
+    res = {"animation": name, "duration": duration, "bone": b, "tremble_hz": cycles / duration,
+           "keyed": keyed, "loop": True}
+    if display_fps:
+        res["display_fps"] = display_fps
+    if per_cycle:
+        res["frames_per_tremble"] = per_cycle
+    res = _with_warnings(data, res)
+    if warnings:
+        res["warnings"] = warnings + res.get("warnings", [])
+    return res
+
+
+def _tremble_cycles(frequency: float, duration: float, fps: float) -> tuple[int, int] | None:
+    """(cycles in `duration`, frames per cycle) for the frequency fps / n
+    (n >= 3) closest to `frequency` that also loops seamlessly over
+    `duration`; None when duration is off the frame grid."""
+    frames = fps * duration
+    total = round(frames)
+    if total < 3 or abs(frames - total) > 1e-6:
+        return None
+    best = None
+    for n in range(3, total + 1):
+        if total % n:
+            continue
+        hz = fps / n
+        score = (abs(hz - frequency), -hz)  # ties: the faster tremble
+        if best is None or score < best[0]:
+            best = (score, total // n, n)
+    return None if best is None else (best[1], best[2])
 
 
 def symbol_dim(
