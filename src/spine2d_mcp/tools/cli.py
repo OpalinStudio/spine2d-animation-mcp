@@ -45,6 +45,8 @@ def spine_export(
     overrides: dict[str, Any] | None = None,
     spine_path: str | None = None,
     version: str | None = None,
+    target_version: str | None = None,
+    audit_json: str | None = None,
 ) -> dict:
     """Export with the Spine editor: `Spine -i <input> -o <output> -e ...`.
 
@@ -58,7 +60,42 @@ def spine_export(
       the Spine export dialog for GIF, WebM, MP4, MOV, AVI, HTML (Spine
       Player / Web Components) or a custom JSON/binary export.
     clean_up runs animation clean up first. overrides become `--set key=value`
-    (4.3) to tweak settings without editing the file (e.g. {"scale": 50})."""
+    (4.3) to tweak settings without editing the file (e.g. {"scale": 50}).
+
+    target_version: data version to write ("4.2" for a 4.2.x game runtime;
+    major.minor only, the editor refuses "4.2.43"); json or a JSON settings
+    dict; binary is refused because the 4.3.26 editor ignores it there and
+    writes 4.3 data. `version` is the EDITOR version that runs the export. Older targets
+    drop 4.3-only features with no error: pass `audit_json` (a 4.3 JSON of the
+    same skeleton) to list them in `downgrade_losses` / `warnings`; exported
+    JSON files that carry keys the 4.2 reader ignores (`slider`) are reported
+    too. Esoteric's advice: reimport the export in the target editor
+    (e.g. 4.2.43), re-export from it, then check it in the game runtime."""
+    warnings: list[str] = []
+    losses: list[dict] | None = None
+    if target_version is not None:
+        from ..spine import document as doc
+        from ..spine import downgrade
+
+        downgrade.parse_target(target_version)
+        if format not in ("json", "settings"):
+            raise ValueError(
+                "target_version applies to a JSON export (format json or a JSON settings dict): "
+                "the 4.3.26 editor ignores `version` for binary and still writes 4.3 data"
+            )
+        if format == "settings" and not (isinstance(settings, dict) and settings.get("format", "JSON") == "JSON"
+                                         and "skel" not in str(settings.get("extension", ""))):
+            raise ValueError("target_version with format 'settings' needs a JSON export settings dict")
+        if downgrade.parse_target(target_version) < (4, 3):
+            warnings.append(
+                f"export to {target_version} is a lossy downgrade (Esoteric: emergency recovery only); "
+                f"reimport it in the {target_version} editor, re-export, and render it in the game runtime"
+            )
+            if audit_json:
+                losses = downgrade.losses(doc.load(resolve(audit_json)), target_version)
+                warnings += downgrade.summary(losses, target_version)
+            else:
+                warnings.append("no audit_json given: 4.3-only features of the project were not listed")
     if format in ("json", "binary"):
         export: str | dict = (
             cli.json_export_settings(nonessential, pretty) if format == "json"
@@ -74,7 +111,48 @@ def spine_export(
         export = settings if isinstance(settings, dict) else str(resolve(settings))
     else:
         export = format
-    return cli.export(input_path, output, export, clean_up, overrides, spine_path, version).as_dict()
+    if target_version is not None:
+        # The editor reads `version` only from class "export-json"; with class
+        # "json" it is ignored and 4.3 data comes out with no message (4.3.26).
+        export = {**export, "class": "export-json", "version": target_version}
+    res = cli.export(input_path, output, export, clean_up, overrides, spine_path, version).as_dict()
+    if target_version is not None:
+        res["target_version"] = target_version
+        if losses is not None:
+            res["downgrade_losses"] = losses
+        if res.get("ok"):
+            warnings += _foreign_keys_in_output(output, target_version)
+    if warnings:
+        res["warnings"] = res.get("warnings", []) + warnings
+    return res
+
+
+def _foreign_keys_in_output(output: str, target_version: str) -> list[str]:
+    """Exported JSON files stamped `x-from-y` that keep top-level keys the
+    older reader ignores (a 4.3 slider goes to `slider`)."""
+    import json
+    from pathlib import Path
+
+    from ..spine import downgrade
+
+    root = Path(resolve(output))
+    files = [root] if root.is_file() else sorted(root.rglob("*.json")) if root.is_dir() else []
+    out = []
+    for f in files[:200]:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        spine = str((data.get("skeleton") or {}).get("spine", "")) if isinstance(data, dict) else ""
+        if not spine.startswith(target_version + "-from-") and not spine.startswith(target_version + "."):
+            out.append(f"{f.name}: stamped {spine!r}, not {target_version}: the version was not applied")
+            continue
+        if "-from-" not in spine:
+            continue
+        keys = downgrade.foreign_keys(data)
+        if keys:
+            out.append(f"{f.name} ({spine}): keys {keys} are ignored by the {target_version} reader")
+    return out
 
 
 @mcp.tool()

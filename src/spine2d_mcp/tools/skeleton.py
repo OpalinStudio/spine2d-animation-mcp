@@ -65,11 +65,26 @@ def inspect_skeleton(
 
 
 @mcp.tool(annotations=READ_ONLY)
-def validate_skeleton(skeleton: str) -> dict:
+def validate_skeleton(skeleton: str, target_version: str | None = None) -> dict:
     """Check a skeleton JSON against the Spine 4.3 reader rules (references,
     required fields, enums, weighted vertices, curves, draw order offsets...).
-    Works on files exported by the Spine editor too."""
-    return validate_data(doc.load(resolve(skeleton))).as_dict()
+    Works on files exported by the Spine editor too.
+
+    target_version ("4.2", major.minor) also lists what an export to that
+    version would silently drop (sliders and their keys, transform property
+    mapping, draw order folders, inverse clipping, linked mesh in another
+    slot, IK/physics volume mode) in `downgrade_losses`, one warning per kind
+    in `downgrade_warnings`. The editor only says "may lose information"."""
+    data = doc.load(resolve(skeleton))
+    out = validate_data(data).as_dict()
+    if target_version is not None:
+        from ..spine import downgrade
+
+        items = downgrade.losses(data, target_version)
+        out["target_version"] = target_version
+        out["downgrade_losses"] = items
+        out["downgrade_warnings"] = downgrade.summary(items, target_version)
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)

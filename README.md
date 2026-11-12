@@ -11,7 +11,7 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 | Area | Tools |
 |---|---|
 | **PSD → rig** | `import_psd_to_spine`: layered PSD → bones, slots, region attachments, atlas, per-layer images, oriented bones, optional leg/arm IK and starter animations. Humanoid layer names build the character rig (with `forearm_*` / `shin_*` for real elbows and knees); every other layer is kept with its own bone (parented by group), `[bone]` groups, `[pivot]` markers, `[ignore]`, so props and slot symbols import too |
-| **Skeleton** | `create_skeleton`, `inspect_skeleton`, `validate_skeleton`, `get_element` |
+| **Skeleton** | `create_skeleton`, `inspect_skeleton`, `validate_skeleton` (`target_version` lists what an older export drops), `get_element` |
 | **Bones** | `add_bone` (local or world coords), `update_bone` (rename with every reference, reparent keeping the world pose, inherit modes, 4.3 icon size/rotation, visibility, skin-required), `remove_bone` (cascades, remaps mesh weights) |
 | **Slots / draw order** | `add_slot`, `update_slot`, `remove_slot`, `set_draw_order` (animation draw-order keys are re-encoded automatically) |
 | **Attachments** | region (with image sequences), mesh (grid / polygon outline / explicit), `bind_mesh_weights` (auto weights; existing deform keys converted to the weighted layout), linked mesh (4.3: source in another slot), bounding box, clipping (4.3: inverse + convex), point, path (bezier lengths computed), raw JSON, update, remove |
@@ -28,7 +28,7 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 | **Delivery** | `export_web_preview`: one self-contained HTML with the Spine Web Player (animation / skin / background / speed buttons), auto-checked at phone and desktop sizes. `export_game_pack`: `.skel`/`.json` + atlas by the editor, premultiplied alpha, extra resolutions, texture memory report, runtime load check |
 | **Preview** | `render_preview`: quick pure-Python PNG frame, contact sheet or GIF (approximate: no constraints or clipping) |
 | **Atlas** | `pack_atlas`, `read_atlas`, `unpack_atlas_images` (pure Python) |
-| **Spine CLI** | `spine_status`, `spine_cli_help`, `spine_export` (JSON/binary/+pack/PNG/any settings, clean up, 4.3 `--set` overrides), `spine_import_data` (data → `.spine` project, 4.3 animation import / merge), `spine_pack`, `spine_unpack`, `spine_clean_up`, `spine_project_info`, `spine_last_export_settings`, `write_export_settings`, raw `spine_cli` |
+| **Spine CLI** | `spine_status`, `spine_cli_help`, `spine_export` (JSON/binary/+pack/PNG/any settings, clean up, 4.3 `--set` overrides, `target_version` "4.2" JSON downgrade with a list of the 4.3-only features it drops), `spine_import_data` (data → `.spine` project, 4.3 animation import / merge), `spine_pack`, `spine_unpack`, `spine_clean_up`, `spine_project_info`, `spine_last_export_settings`, `write_export_settings`, raw `spine_cli` |
 | **Reference** | `spine_reference`: workflow, **quality** (animation principles mapped to tool calls, timing numbers, loop / transition / physics rules), **recipes**, delivery **checklist**, timelines, curves, constraints, presets, 4.3 changes. Also served as MCP resources (`spine://guide/...`) and prompts (`animate`, `review_animation`, `rig_from_psd`) |
 
 The Spine 4.3 format is taken from the official reader (`reference/SkeletonJson.java`, spine-runtimes branch 4.3). The validator accepts every skeleton exported by Spine 4.3 in the official spine-runtimes examples.
