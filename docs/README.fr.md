@@ -21,7 +21,7 @@ Le serveur travaille sur les fichiers JSON de squelette Spine. Chaque outil char
 - **Aperçu web** (`export_web_preview`) : un seul fichier HTML avec le Spine Web Player, boutons d'animation, de skin, de fond et de vitesse. Vérifié automatiquement en taille téléphone et bureau.
 - **Pack pour le jeu** (`export_game_pack`) : `.skel` ou `.json` + atlas par l'éditeur, alpha prémultiplié, plusieurs résolutions (`@0.5x`), poids mémoire des textures, puis contrôle de chargement dans le runtime.
 - **Aperçu Python rapide** : image PNG, planche ou GIF (approximatif, sans contraintes).
-- **Atlas** : empaquetage, lecture, dépaquetage en Python pur.
+- **Atlas** : empaquetage, lecture, dépaquetage en Python pur. Les champs des régions sont lus indentés ou non, comme dans le runtime officiel.
 - **CLI Spine** : export JSON/binaire/atlas/PNG/GIF/vidéo, import de données dans un projet `.spine` (fusion et import d'animation 4.3), texture packer, unpack, clean up, infos projet, derniers réglages d'export (4.3), overrides `--set` (4.3).
 
 La liste complète des outils est dans le [README anglais](../README.md#what-it-covers).

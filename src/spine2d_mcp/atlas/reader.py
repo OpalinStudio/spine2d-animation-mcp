@@ -90,7 +90,10 @@ def read_atlas(path: str | Path) -> Atlas:
             page = None
             region = None
             continue
-        if ":" in line and (raw[:1] in (" ", "\t") or region is None and page is not None and not _is_name(line)):
+        # Like the official runtime (TextureAtlas.ts readEntry), inside a page
+        # any line holding ':' is a field, indented or not; only the first line
+        # of a page is its name whatever it contains.
+        if page is not None and ":" in line:
             key, _, value = line.strip().partition(":")
             key, value = key.strip(), value.strip()
             target = region if region is not None else page
@@ -109,14 +112,6 @@ def read_atlas(path: str | Path) -> Atlas:
         if not r.orig_width:
             r.orig_width, r.orig_height = r.width, r.height
     return Atlas(path=path, pages=pages, regions=regions)
-
-
-def _is_name(line: str) -> bool:
-    key = line.split(":", 1)[0].strip()
-    return key not in {
-        "size", "format", "filter", "repeat", "pma", "scale", "bounds", "offsets",
-        "rotate", "index", "xy", "orig", "offset", "split", "pad",
-    }
 
 
 def _set_field(target, key: str, value: str) -> None:

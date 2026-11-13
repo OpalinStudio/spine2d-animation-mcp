@@ -27,7 +27,7 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 | **Editor render** | `editor_render`: the Spine editor's own export (reference quality): GIF, APNG, WebM, MOV, AVI or PNG / WebP / JPEG sequences, from a `.spine` or a JSON imported into a throwaway project |
 | **Delivery** | `export_web_preview`: one self-contained HTML with the Spine Web Player (animation / skin / background / speed buttons), auto-checked at phone and desktop sizes. `export_game_pack`: `.skel`/`.json` + atlas by the editor, premultiplied alpha, extra resolutions, texture memory report, runtime load check |
 | **Preview** | `render_preview`: quick pure-Python PNG frame, contact sheet or GIF (approximate: no constraints or clipping) |
-| **Atlas** | `pack_atlas`, `read_atlas`, `unpack_atlas_images` (pure Python) |
+| **Atlas** | `pack_atlas`, `read_atlas`, `unpack_atlas_images` (pure Python; region fields read indented or not, like the official runtime) |
 | **Spine CLI** | `spine_status`, `spine_cli_help`, `spine_export` (JSON/binary/+pack/PNG/any settings, clean up, 4.3 `--set` overrides, `target_version` "4.2" JSON downgrade with a list of the 4.3-only features it drops), `spine_import_data` (data → `.spine` project, 4.3 animation import / merge), `spine_pack`, `spine_unpack`, `spine_clean_up`, `spine_project_info`, `spine_last_export_settings`, `write_export_settings`, raw `spine_cli` |
 | **Reference** | `spine_reference`: workflow, **quality** (animation principles mapped to tool calls, timing numbers, loop / transition / physics rules), **recipes**, delivery **checklist**, timelines, curves, constraints, presets, 4.3 changes. Also served as MCP resources (`spine://guide/...`) and prompts (`animate`, `review_animation`, `rig_from_psd`) |
 
