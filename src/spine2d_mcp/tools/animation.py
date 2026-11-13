@@ -75,7 +75,9 @@ def set_keyframes(
     kind / timeline / key values:
     - bone: rotate {value} (degrees, relative to setup), translate {x, y},
       translatex/translatey {value}, scale {x, y} (multiplier), scalex/scaley,
-      shear {x, y}, shearx/sheary, inherit {inherit: normal|noScale|...}
+      shear {x, y}, shearx/sheary, inherit {inherit: normal|noScale|...}.
+      Single-value timelines read only `value`: `y` on translatey is stored
+      as `value` (warning), any other stray number is refused
     - slot: attachment {name} (null hides), rgba {color: RRGGBBAA}, rgb
       {color: RRGGBB}, alpha {value 0..1}, rgba2 {light: RRGGBBAA, dark:
       RRGGBB} (tint black), rgb2 {light, dark}
@@ -97,9 +99,13 @@ def set_keyframes(
         if kind == "physics" and target == "*":
             target = ""
         _check_target(ed.data, kind, target)
-        out = an.set_keys(anim, kind, target, timeline, keys, mode=mode, fps=fps)
+        notes: list[str] = []
+        out = an.set_keys(anim, kind, target, timeline, keys, mode=mode, fps=fps, notes=notes)
         dur = an.animation_duration(anim)
-    return ed.result(animation=animation, keys=out, duration=dur)
+    res = ed.result(animation=animation, keys=out, duration=dur)
+    if notes:
+        res["warnings"] = notes + res.get("warnings", [])
+    return res
 
 
 def _check_target(data: dict, kind: str, target: str) -> None:

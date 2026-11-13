@@ -191,7 +191,42 @@ def get_keys(anim: dict, kind: str, target: str | None = None, timeline: str | N
     return parent.get(key) or []
 
 
-def _normalize_input_key(kind: str, timeline: str | None, spec: fmt.TimelineSpec, k: dict) -> dict:
+def _stray_numbers(k: dict, allowed: set[str]) -> list[str]:
+    return [
+        f for f, v in k.items()
+        if f not in allowed and isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+
+
+def _fix_value_field(timeline: str, k: dict, notes: list[str] | None) -> None:
+    """Single-value timelines read only `value`; any other number is ignored
+    by the reader (default used, the clip does not move). An axis field that
+    matches the timeline (`y` on translatey) is renamed, the rest refused."""
+    if "value" in k:
+        return
+    stray = _stray_numbers(k, {"time", "curve"})
+    if not stray:
+        return
+    axis = timeline[-1] if timeline[-1] in "xy" and timeline[:-1] in (
+        "translate", "scale", "shear") else None
+    if axis and stray == [axis]:
+        k["value"] = k.pop(axis)
+        if notes is not None:
+            msg = (f"{timeline}: keys written with `{axis}` were stored as `value` "
+                   f"(the reader only reads `value` on this timeline)")
+            if msg not in notes:
+                notes.append(msg)
+        return
+    raise AnimationError(
+        f"{timeline} keys take `value`, got {', '.join(f'`{f}`' for f in stray)}: "
+        f"the reader would ignore {'it' if len(stray) == 1 else 'them'} and use the default"
+    )
+
+
+def _normalize_input_key(
+    kind: str, timeline: str | None, spec: fmt.TimelineSpec, k: dict,
+    notes: list[str] | None = None,
+) -> dict:
     if not isinstance(k, dict):
         raise AnimationError(f"each key must be an object, got {k!r}")
     k = dict(k)
@@ -208,6 +243,8 @@ def _normalize_input_key(kind: str, timeline: str | None, spec: fmt.TimelineSpec
             k["x"], k["y"] = v
         else:
             k["x"] = k["y"] = v
+    if spec.values == ("value",):
+        _fix_value_field(timeline or kind, k, notes)
     if spec.kind == "color":
         for fld, n in spec.color_fields:
             if fld not in k:
@@ -240,8 +277,12 @@ def set_keys(
     keys: list[dict],
     mode: str = "merge",
     fps: float | None = None,
+    notes: list[str] | None = None,
 ) -> list[dict]:
     """Write keys into a timeline.
+
+    `notes` (optional list) receives a message for each key field that was
+    renamed (e.g. `y` -> `value` on a translatey timeline).
 
     mode "replace" discards the existing keys; "merge" keeps them and replaces
     keys at the same time. Curves of the new keys are converted against their
@@ -263,7 +304,7 @@ def set_keys(
 
     new: list[tuple[dict, Any]] = []
     for raw in keys:
-        k = _normalize_input_key(kind, timeline, spec, raw)
+        k = _normalize_input_key(kind, timeline, spec, raw, notes)
         if fps:
             k["time"] = round(k["time"] * fps) / fps
         new.append((k, k.pop("curve", None)))

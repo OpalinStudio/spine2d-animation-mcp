@@ -37,6 +37,12 @@ class ValidationReport:
 
 _HEX = re.compile(r"^[0-9a-fA-F]+$")
 
+# Non-curve key fields the reader also reads, by timeline value layout
+# (IK keys: SkeletonJson readTimelines, "bendPositive"/"compress"/"stretch").
+_EXTRA_KEY_FIELDS: dict[tuple[str, ...], tuple[str, ...]] = {
+    fmt.IK_TIMELINE.values: ("bendPositive", "compress", "stretch"),
+}
+
 
 def validate(project) -> None:
     """Typed entry point used by the PSD builder. Raises on errors."""
@@ -597,10 +603,17 @@ class _Validator:
             self.err(f"{where}: keys must be an array")
             return
         last = -1.0
+        ignored: list[str] = []
+        allowed = {"time", "curve", *spec.values, *_EXTRA_KEY_FIELDS.get(spec.values, ())}
+        check_fields = spec.kind == "num" and spec.curve and spec.values != ("__blend",)
         for i, k in enumerate(keys):
             if not isinstance(k, dict):
                 self.err(f"{where}: key #{i} must be an object")
                 continue
+            if check_fields:
+                for f in k:
+                    if f not in allowed and f not in ignored:
+                        ignored.append(f)
             t = k.get("time", 0)
             if not isinstance(t, (int, float)) or t < 0:
                 self.err(f"{where}: key #{i} has invalid time {t!r}")
@@ -630,6 +643,13 @@ class _Validator:
                         self.err(f"{where}: key #{i} missing `{fld}`")
                     else:
                         self._color(k[fld], 2 * n, f"{where} key #{i} {fld}")
+        if ignored:
+            expected = ", ".join(f"`{v}`" for v in spec.values)
+            self.warn(
+                f"{where}: key field(s) {', '.join(f'`{f}`' for f in ignored)} are "
+                f"ignored by the reader (this timeline reads {expected}; missing "
+                f"values fall back to the default)"
+            )
 
     def _draw_offsets(self, key: dict, order: list[str], where: str) -> None:
         offsets = key.get("offsets")
