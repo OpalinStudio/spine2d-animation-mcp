@@ -160,7 +160,9 @@ def runtime_render(
     mesh hulls and triangles, clipping polygons, paths, hit boxes) to check
     pivots, weights and masks. track_bones: bones whose world position /
     rotation / scale per frame are returned in `tracks` (after IK and
-    physics); events fired during the capture are returned in `events`.
+    physics); events fired during the capture are returned in `events`,
+    dated at their key time (an event keyed at 0 is reported at 0, also
+    after a warmup).
     max_sheet_frames: a sheet keeps at most this many cells (every n-th frame
     beyond it); the result gives sheet_frames / sheet_step / sheet_fps /
     sheet_size and warns when frames were skipped (a fast tremble is then
@@ -206,7 +208,8 @@ def runtime_sample(
     """Measure an animation instead of looking at it: world x, y, rotation,
     scaleX, scaleY of `bones` (default: all) at every frame (or at `times`),
     as the OFFICIAL runtime computes them, IK / transform / path / physics
-    constraints included, plus the events fired. Use it to check numbers a
+    constraints included, plus the events fired (dated at their key time,
+    an event keyed at 0 included). Use it to check numbers a
     picture can't give: does the foot stay at the same height during its
     contact, how far does the hand travel, does the last frame equal the
     first, when exactly does the impact happen. Same warmup / overlays / mix /

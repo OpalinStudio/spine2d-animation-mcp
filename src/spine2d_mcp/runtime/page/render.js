@@ -85,11 +85,24 @@
     const st = new S.AnimationState(stateData);
     // t0: playhead when the capture starts (after warm-up); event times are relative to it.
     const inst = { sk, st, t: 0, t0: 0, overlays: [], events: [] };
+    // Events are dated at their key, not at the end of the step that fired them:
+    // playhead - (animation time now - key time), one loop back if the step wrapped.
+    // `at` (absolute playhead) lets startCapture() drop the warm-up ones only.
     st.addListener({
-      event: (entry, ev) => inst.events.push({
-        time: Math.round((inst.t - inst.t0) * 1e4) / 1e4, name: ev.data.name, track: entry.trackIndex,
-        animation: entry.animation ? entry.animation.name : null,
-      }),
+      event: (entry, ev) => {
+        let at = inst.t;
+        if (entry.getAnimationTime && entry.animation && ev.time != null) {
+          const dur = entry.animation.duration;
+          let back = entry.getAnimationTime() - ev.time;
+          if (back < -1e-6 && dur > 0) back += dur;
+          const speed = (entry.timeScale || 1) * (st.timeScale || 1);
+          if (back >= 0 && back <= dur + 1e-6) at = inst.t - back / speed;
+        }
+        inst.events.push({
+          at, name: ev.data.name, track: entry.trackIndex,
+          animation: entry.animation ? entry.animation.name : null,
+        });
+      },
     });
     if (cfg.animation) {
       if (!data.findAnimation(cfg.animation)) throw new Error("animation not found: " + cfg.animation);
@@ -106,6 +119,22 @@
     fire(inst);
     step(inst, 0);
     return inst;
+  }
+
+  // Start of the capture: drop the events keyed before it (warm-up) but keep the
+  // ones keyed exactly at its start, which fire in the initial zero step or in the
+  // last warm-up step that reaches the loop boundary.
+  function startCapture(inst) {
+    inst.t0 = inst.t;
+    inst.events = inst.events.filter((e) => e.at >= inst.t0 - 1e-5);
+  }
+
+  // Events as returned to Python: {time, name, track, animation}, time relative to t0.
+  function eventsOf(inst) {
+    return inst.events.map((e) => ({
+      time: Math.round(Math.max(0, e.at - inst.t0) * 1e4) / 1e4 + 0,
+      name: e.name, track: e.track, animation: e.animation,
+    }));
   }
 
   function fire(inst) {
@@ -274,8 +303,7 @@
       const inst = instance();
       const dur = cfg.animation ? data.findAnimation(cfg.animation).duration : 0;
       if (warmup > 0 && dur > 0) advance(inst, warmup * dur, fps);
-      inst.t0 = inst.t;
-      inst.events.length = 0;
+      startCapture(inst);
       let small = null, sctx = null;
       // Supersampling: draw at pxW x pxH, downscale in a 2D canvas (the
       // browser resamples premultiplied, so edges stay clean) and encode
@@ -325,7 +353,7 @@
     // Bone samples and fired events of the render started by begin().
     finish() {
       const j = this._job;
-      return { bones: j.names, frames: j.samples, events: j.inst.events };
+      return { bones: j.names, frames: j.samples, events: eventsOf(j.inst) };
     },
 
     // Same as a render without drawing: bone world transforms per time.
@@ -333,8 +361,7 @@
       const inst = instance();
       const dur = cfg.animation ? data.findAnimation(cfg.animation).duration : 0;
       if (warmup > 0 && dur > 0) advance(inst, warmup * dur, fps);
-      inst.t0 = inst.t;
-      inst.events.length = 0;
+      startCapture(inst);
       const names = boneNames(inst.sk, wanted);
       const frames = [];
       let t = 0;
@@ -343,7 +370,7 @@
         t = target;
         frames.push(snapshot(inst.sk, names));
       }
-      return { bones: names, frames, events: inst.events };
+      return { bones: names, frames, events: eventsOf(inst) };
     },
   };
   window.spineMcpReady = true;
