@@ -157,12 +157,15 @@ def region_image(atlas: Atlas, region: AtlasRegion, cache: dict | None = None) -
     w, h = region.width, region.height
     packed_w, packed_h = (h, w) if region.degrees in (90, 270) else (w, h)
     img = page.crop((region.x, region.y, region.x + packed_w, region.y + packed_h))
+    # Spine's packer stores a `rotate: 90` region turned 90 degrees
+    # counter-clockwise in the page: turn it back clockwise (checked against
+    # the Spine 4.3.26 packer). PIL's ROTATE_* and rotate() are counter-clockwise.
     if region.degrees == 90:
-        img = img.transpose(Image.Transpose.ROTATE_90)
-    elif region.degrees == 270:
         img = img.transpose(Image.Transpose.ROTATE_270)
+    elif region.degrees == 270:
+        img = img.transpose(Image.Transpose.ROTATE_90)
     elif region.degrees:
-        img = img.rotate(region.degrees, expand=True)
+        img = img.rotate(-region.degrees, expand=True)
     if (region.orig_width, region.orig_height) != (w, h) or region.offset_x or region.offset_y:
         full = Image.new("RGBA", (region.orig_width, region.orig_height), (0, 0, 0, 0))
         # offsets are from the bottom-left of the original image
