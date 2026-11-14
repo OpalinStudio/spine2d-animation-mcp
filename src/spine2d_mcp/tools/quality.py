@@ -30,6 +30,8 @@ def analyze_animation(
     runtime: bool = True,
     ground_bones: list[str] | None = None,
     fps: float = 60,
+    atlas: str | None = None,
+    skin: str | None = None,
 ) -> dict:
     """Review an animation like an animation lead would (all animations when
     `animation` is omitted) and list what to fix, each with the tool call
@@ -47,6 +49,10 @@ def analyze_animation(
     foot_slide and the `ground_speed` to move the character at (also the
     times to key footstep events at).
 
+    atlas / skin: as in runtime_render. Pass `atlas` when the skeleton is a
+    working copy whose .atlas is not next to it: without one, the runtime
+    part cannot run and the report says so (issue runtime_not_run).
+
     loop: true / false, or None to detect it (most timelines end where they
     start). severity: warning = visible defect, info = worth a look. The
     checks are heuristics that tell you where to LOOK: still render a sheet
@@ -62,17 +68,26 @@ def analyze_animation(
         rep = analysis.analyze(data, name, loop)
         if runtime and rep["duration"] > 0:
             try:
-                sampled = rt_render.sample(str(path), name, fps=fps, loop=False, include_last=True)
+                sampled = rt_render.sample(str(path), name, fps=fps, loop=False, include_last=True,
+                                           atlas=atlas, skin=skin)
                 motion = analysis.motion_report(sampled, rep["loop"]["assumed"], physics, ground_bones)
                 if sampled["events"]:
                     motion["events_fired"] = sampled["events"]
             except (rt_render.RuntimeRenderError, OSError) as e:
-                motion = {"issues": [], "runtime_error": str(e)[:400]}
+                motion = {"issues": [analysis._issue(
+                    "warning", "runtime_not_run", name,
+                    "the official-runtime checks did not run (IK, physics, pops, loop gap, "
+                    f"contacts are NOT checked): {str(e)[:200]}",
+                    "pass `atlas` (and `skin`) like runtime_render, or put the .atlas next "
+                    "to the skeleton, then run analyze_animation again")],
+                    "runtime_error": str(e)[:400]}
             rep["issues"] += motion.pop("issues")
             rep["motion"] = motion
             rep["counts"] = {s: sum(1 for i in rep["issues"] if i["severity"] == s)
                              for s in analysis.SEVERITIES}
         rep["verdict"] = (
+            "the runtime checks did NOT run (see motion.runtime_error): pass `atlas` and run "
+            "again before trusting this review" if "runtime_error" in rep.get("motion", {}) else
             "fix the warnings, then look at a sheet and an onion render" if rep["counts"]["warning"]
             or rep["counts"]["error"] else
             "no defect detected by the checks: now judge poses, arcs and timing on a sheet and "
