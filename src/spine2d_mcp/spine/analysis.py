@@ -250,6 +250,8 @@ def analyze(data: dict, name: str, loop: bool | None = None) -> dict:
                 f"{len(keys)} keys ({_num(len(keys) / span_t)}/s): baked motion is heavy and hard to edit",
                 "fewer keys with bezier curves, or spine_clean_up on the project"))
 
+    issues += _tile_container_issues(data, bones_anim)
+
     counts = {s: sum(1 for i in issues if i["severity"] == s) for s in SEVERITIES}
     return {
         "animation": name,
@@ -262,6 +264,64 @@ def analyze(data: dict, name: str, loop: bool | None = None) -> dict:
         "issues": issues,
         "counts": counts,
     }
+
+
+_MOVING_TIMELINES = ("translate", "translatex", "translatey", "rotate", "scale", "scalex",
+                     "scaley", "shear", "shearx", "sheary")
+
+
+def _tile_container_issues(data: dict, bones_anim: dict) -> list[dict]:
+    """Symbol clips: a bone whose subtree draws the reel-cell tile (background,
+    frame, cell mask: generators.tile_slots) and that is keyed away from its
+    setup pose drags the tile out of its cell (pop, shake, squash on the
+    container)."""
+    from . import generators as gen  # generators does not import analysis
+
+    tiles = set(gen.tile_slots(data))
+    if not tiles:
+        return []
+    # Reel-cell symbols only: root -> single-child chain down to the container
+    # that draws the tile, with a separate character subtree under it (the bone
+    # symbol_bone picks). Windows / plaques whose frame IS the moving object
+    # (intro, roulette, multiplier plate) have no such split and are skipped.
+    chain = [doc.bones(data)[0]["name"]]
+    owned = {s["bone"] for s in doc.slots(data)}
+    while chain[-1] not in owned and len(doc.children_of(data, chain[-1])) == 1:
+        chain.append(doc.children_of(data, chain[-1])[0])
+    char = gen.symbol_bone(data)
+    if char in chain or tiles & set(gen._subtree_slots(data, char)):
+        return []
+    out: list[dict] = []
+    for bone, tls in bones_anim.items():
+        if bone not in chain:
+            continue
+        moved = [s for s in gen._subtree_slots(data, bone) if s in tiles]
+        if not moved:
+            continue
+        what: list[str] = []
+        for tl in _MOVING_TIMELINES:
+            keys = (tls or {}).get(tl) or []
+            spec = fmt.BONE_TIMELINES[tl]
+            dev, peak = 0.0, 0.0
+            for k in keys:
+                for v, d in zip(an.key_values(spec, k), spec.defaults):
+                    if abs(v - d) > dev:
+                        dev, peak = abs(v - d), v
+            if dev > 1e-3:
+                what.append(f"{tl} {'up to' if tl.startswith('scale') else 'to'} {_num(peak)}")
+        if not what:
+            continue
+        out.append(_issue(
+            "info", "tile_container_keyed", f"{bone} ({', '.join(what)})",
+            f"bone {bone!r} carries the tile slots {sorted(moved)} (background / frame / cell "
+            f"mask) and is keyed ({', '.join(what)}): the whole tile moves with the symbol and "
+            "leaves its reel cell (overlaps the neighbours, frame drawn bigger / off-centre). "
+            "Fine for a deliberate full-tile win pop; for an idle, land or anticipation it "
+            "reads as the reel shaking",
+            f"if unwanted: key the character bone {char!r} instead (copy_keys, then "
+            f"clear_timeline on {bone!r}) and size the pop on the object alone so it stays "
+            "inside the cell"))
+    return out
 
 
 # --------------------------------------------------------------- runtime

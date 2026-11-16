@@ -41,7 +41,9 @@ def analyze_animation(
     at the loop point), linear_motion (no easing: mechanical), stepped_motion,
     dead_keys (rotation keys overridden by an IK constraint), twinning (left
     and right identical), no_overlap (a limb keyed as one rigid piece),
-    squash_volume, spin, key_soup.
+    squash_volume, spin, key_soup, tile_container_keyed (reel symbol: the bone
+    that also draws the tile background / frame is keyed, so the tile leaves
+    its cell; info, fine for a deliberate full-tile win pop).
     From the OFFICIAL runtime (runtime=true; IK and physics applied): loop_gap
     (pose at the end vs the start, per bone), pop (a bone jumping in one
     frame), dead_hold (nothing moves), most active bones, peak speed; with
