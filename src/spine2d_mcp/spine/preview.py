@@ -101,6 +101,9 @@ def render(
         if att is None:
             continue
         atype = att.get("type", "region")
+        if atype not in ("region", "mesh", "linkedmesh"):
+            # clipping / point / boundingbox / path draw no texture: never "missing"
+            continue
         if atype == "linkedmesh":
             src_skin = skins.get(att.get("skin") or "default") or {}
             source = ((src_skin.get("attachments") or {}).get(att.get("slot") or slot_name) or {}).get(att.get("source"))
