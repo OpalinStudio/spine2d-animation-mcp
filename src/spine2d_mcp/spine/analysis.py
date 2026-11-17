@@ -205,20 +205,45 @@ def analyze(data: dict, name: str, loop: bool | None = None) -> dict:
     # ---- chains without overlap -----------------------------------------
     parent = {b["name"]: b.get("parent") for b in doc.bones(data)}
     keyed = {b for b, tls in bones_anim.items() if len((tls or {}).get("rotate") or []) >= 3}
-    for head in sorted(b for b in keyed if parent.get(b) not in keyed):
-        chain = [head]
-        while True:
-            kids = [b for b in keyed if parent.get(b) == chain[-1]]
-            if len(kids) != 1:
-                break
-            chain.append(kids[0])
-        if len(chain) >= 3 and len({_times(bones_anim[b]["rotate"]) for b in chain}) == 1:
-            issues.append(_issue(
-                "info", "no_overlap", " > ".join(chain),
-                "every bone of the chain is keyed on the same frames: the whole limb moves as one "
-                "rigid piece (no overlapping action / drag)",
-                f"offset_keys(bones={chain!r}, offset=0, stagger=0.03 to 0.07) so each bone "
-                "follows its parent a few frames later"))
+    # Follow EVERY branch (a torso that carries two arms is two chains), then
+    # cut each root-to-leaf path into runs of bones keyed on the same frames.
+    kids_of: dict[str, list[str]] = {}
+    for b in sorted(keyed):
+        p = parent.get(b)
+        if p is not None and p in keyed:
+            kids_of.setdefault(p, []).append(b)
+    runs: list[tuple[str, ...]] = []
+    stack = [[h] for h in sorted((b for b in keyed if parent.get(b) not in keyed), reverse=True)]
+    while stack:
+        path = stack.pop()
+        kids = kids_of.get(path[-1])
+        if kids:
+            stack.extend(path + [k] for k in reversed(kids))
+            continue
+        run: list[str] = []
+        for b in path + [None]:
+            if b is not None and run and _times(bones_anim[b]["rotate"]) == _times(bones_anim[run[0]]["rotate"]):
+                run.append(b)
+                continue
+            if len(run) >= 3 and tuple(run) not in runs:
+                runs.append(tuple(run))
+            run = [b] if b is not None else []
+    for chain in runs:
+        # bones shared with another reported chain (the trunk above a fork)
+        # must not be offset once per branch: offset_keys calls add up
+        shared = [b for b in chain if any(b in other for other in runs if other != chain)]
+        own = [b for b in chain if b not in shared]
+        if shared and len(own) >= 1:
+            fix = (f"offset_keys(bones={own!r}, offset=0.03, stagger=0.03 to 0.07) so this branch "
+                   f"follows {shared[-1]!r} a few frames later; {', '.join(shared)} also lead(s) "
+                   "another reported chain: offset it once, not once per branch")
+        else:
+            fix = (f"offset_keys(bones={list(chain)!r}, offset=0, stagger=0.03 to 0.07) so each bone "
+                   "follows its parent a few frames later")
+        issues.append(_issue(
+            "info", "no_overlap", " > ".join(chain),
+            "every bone of the chain is keyed on the same frames: the whole limb moves as one "
+            "rigid piece (no overlapping action / drag)", fix))
 
     # ---- squash without volume, spins, key soup --------------------------
     for label, kind, _, tl, spec, keys in timelines:

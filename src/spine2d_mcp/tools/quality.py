@@ -40,7 +40,8 @@ def analyze_animation(
     From the keys: loop_pop (last value != first), loop_hitch (speed break
     at the loop point), linear_motion (no easing: mechanical), stepped_motion,
     dead_keys (rotation keys overridden by an IK constraint), twinning (left
-    and right identical), no_overlap (a limb keyed as one rigid piece),
+    and right identical), no_overlap (a limb keyed as one rigid piece; every branch of a fork,
+    e.g. a torso and each of its arms, is checked),
     squash_volume, spin, key_soup, tile_container_keyed (reel symbol: the bone
     that also draws the tile background / frame is keyed, so the tile leaves
     its cell; info, fine for a deliberate full-tile win pop).
