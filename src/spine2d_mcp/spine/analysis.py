@@ -26,6 +26,9 @@ from . import document as doc
 from . import format as fmt
 
 SEVERITIES = ("error", "warning", "info")
+# dead_hold: below this speed (fraction of the motion size per second) a frame
+# counts as frozen. 0.015 = the former 0.0005 per frame at 30 fps.
+HOLD_SPEED = 0.015
 
 
 def _issue(severity: str, code: str, where: str, message: str, fix: str = "") -> dict:
@@ -413,12 +416,15 @@ def motion_report(
             "stepped curve",
             "render a sheet around that time (runtime_render times=[...]) and smooth the keys"))
 
-    # Dead holds: nothing moves at all.
+    # Dead holds: nothing moves at all. The threshold is a SPEED (a fraction of
+    # the motion size per second), so the verdict does not depend on `fps`
+    # (a per-frame step flagged twice as much at 60 fps as at 30 fps).
     frame_max = [max((speeds[b][i] for b in speeds), default=0.0) for i in range(len(times) - 1)]
+    still = HOLD_SPEED * size * dt
     best = cur = 0
     end_i = 0
     for i, v in enumerate(frame_max):
-        cur = cur + 1 if v < 0.0005 * size else 0
+        cur = cur + 1 if v < still else 0
         if cur > best:
             best, end_i = cur, i
     hold = best * dt

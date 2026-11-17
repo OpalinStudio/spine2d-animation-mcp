@@ -47,7 +47,8 @@ def analyze_animation(
     its cell; info, fine for a deliberate full-tile win pop).
     From the OFFICIAL runtime (runtime=true; IK and physics applied): loop_gap
     (pose at the end vs the start, per bone), pop (a bone jumping in one
-    frame), dead_hold (nothing moves), most active bones, peak speed; with
+    frame), dead_hold (nothing moves: a speed threshold, same verdict at any
+    fps), most active bones, peak speed; with
     ground_bones=[foot bones or their IK targets]: the contact intervals,
     foot_slide and the `ground_speed` to move the character at (also the
     times to key footstep events at).
