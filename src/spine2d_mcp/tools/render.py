@@ -150,8 +150,17 @@ def runtime_render(
     "animation": "blink", "start": 1.2}]. Track 0 REPLACES the main animation,
     to check a transition: animation="idle", overlays=[{"track": 0,
     "animation": "walk", "start": 1.0, "loop": true, "mix": 0.2}],
-    duration=2. mix: default crossfade in seconds between the animations of
-    a track (AnimationStateData.defaultMix in the game).
+    duration=2. A one-shot layer the game clears with addEmptyAnimation takes
+    "mix_out": seconds (the track fades back to the tracks below instead of
+    holding its last frame): [{"track": 1, "animation": "wave", "start": 1,
+    "mix_out": 0.2}]. mix: default crossfade in seconds between the animations
+    of a track (AnimationStateData.defaultMix in the game).
+    "then": [{"animation", "loop", "delay", "mix"}] queues clips after an
+    overlay on its track, like addAnimation in the game (land then idle,
+    celebrate then celebrate_out): delay <= 0 (default 0) starts the next clip
+    at the end of the previous one minus its `mix`, delay > 0 counts from the
+    START of the previous clip; with `then`, `mix_out` fades back after the
+    last queued clip.
     `duration` sets the length of the capture (default: the main animation).
     loop=False plays the main animation once and holds its last pose (one-shot
     actions, blink) instead of restarting it when `duration` is longer.
@@ -212,8 +221,8 @@ def runtime_sample(
     an event keyed at 0 included). Use it to check numbers a
     picture can't give: does the foot stay at the same height during its
     contact, how far does the hand travel, does the last frame equal the
-    first, when exactly does the impact happen. Same warmup / overlays / mix /
-    loop options as runtime_render. The last sample is at the animation's
+    first, when exactly does the impact happen. Same warmup / overlays (with
+    mix_out and then) / mix / loop options as runtime_render. The last sample is at the animation's
     duration (the loop point)."""
     return rt_render.sample(
         skeleton, animation, bones, fps=fps, duration=duration, warmup=warmup, skin=skin,

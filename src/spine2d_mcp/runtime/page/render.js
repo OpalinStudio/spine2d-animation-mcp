@@ -108,13 +108,18 @@
       if (!data.findAnimation(cfg.animation)) throw new Error("animation not found: " + cfg.animation);
       st.setAnimation(0, cfg.animation, cfg.loop !== false);
     }
-    // Animations set later: [{track, animation, start, loop, mix}], fired when the playhead
-    // reaches `start`, exactly as a game state machine would set them. Track 1+ layers on
-    // top (blink); track 0 replaces the main animation (transition test, with `mix`).
+    // Animations set later: [{track, animation, start, loop, mix, mix_out}], fired when the
+    // playhead reaches `start`, exactly as a game state machine would set them. Track 1+
+    // layers on top (blink); track 0 replaces the main animation (transition test, with
+    // `mix`). `mix_out` queues an empty animation after a one-shot layer, so the track
+    // fades back to the tracks below instead of holding its last frame.
     inst.overlays = (cfg.overlays || []).map((o) => Object.assign({ fired: false }, o))
       .sort((a, b) => a.start - b.start);
     for (const o of inst.overlays) {
       if (!data.findAnimation(o.animation)) throw new Error("animation not found: " + o.animation);
+      for (const q of o.then || []) {
+        if (!data.findAnimation(q.animation)) throw new Error("animation not found: " + q.animation);
+      }
     }
     fire(inst);
     step(inst, 0);
@@ -142,6 +147,7 @@
       if (!o.fired && inst.t >= o.start - 1e-6) {
         const entry = inst.st.setAnimation(o.track == null ? 1 : o.track, o.animation, !!o.loop);
         if (o.mix != null) entry.mixDuration = o.mix;
+        if (o.mix_out != null && !o.loop) inst.st.addEmptyAnimation(entry.trackIndex, o.mix_out, 0);
         o.fired = true;
       }
     }
@@ -182,9 +188,34 @@
     else renderer.drawSkeletonDebug(sk, true);
   }
 
+  // `then` of a fired overlay: the clips the game queues after it with addAnimation
+  // (delay > 0: seconds after the previous clip STARTS; <= 0: relative to its end, minus
+  // the mix), then `then_mix_out`: an empty animation after the last one-shot.
+  function queue(inst) {
+    for (const o of inst.overlays) {
+      if (!o.fired || o.queued || !(o.then || o.then_mix_out != null)) continue;
+      o.queued = true;
+      const track = o.track == null ? 1 : o.track;
+      let last = !!o.loop;
+      for (const q of o.then || []) {
+        const delay = q.delay == null ? 0 : q.delay;
+        const entry = inst.st.addAnimation(track, q.animation, !!q.loop, delay);
+        if (q.mix != null) {
+          entry.mixDuration = q.mix;
+          if (delay <= 0 && entry.previous) {
+            entry.delay = Math.max(delay + entry.previous.getTrackComplete() - q.mix, 0);
+          }
+        }
+        last = !!q.loop;
+      }
+      if (o.then_mix_out != null && !last) inst.st.addEmptyAnimation(track, o.then_mix_out, 0);
+    }
+  }
+
   function step(inst, dt) {
     inst.t += dt;
     fire(inst);
+    queue(inst);
     inst.st.update(dt);
     inst.st.apply(inst.sk);
     if (S.Physics) {

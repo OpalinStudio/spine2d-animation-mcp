@@ -38,6 +38,31 @@ class RuntimeRenderError(RuntimeError):
     pass
 
 
+def _overlays(overlays: list[dict] | None) -> list[dict]:
+    """Check `then` (clips queued after an overlay with addAnimation) before the
+    browser starts. With `then`, `mix_out` fades back after the LAST queued clip, so
+    it is passed on as `then_mix_out` (the page queues it after them)."""
+    out = []
+    for i, o in enumerate(overlays or []):
+        if not isinstance(o, dict):
+            raise RuntimeRenderError(f"overlays[{i}] must be an object")
+        o = dict(o)
+        then = o.get("then")
+        if then is not None:
+            if not isinstance(then, list):
+                raise RuntimeRenderError(f"overlays[{i}].then must be a list of {{animation, loop, delay, mix}}")
+            for j, q in enumerate(then):
+                if not isinstance(q, dict) or not isinstance(q.get("animation"), str):
+                    raise RuntimeRenderError(f"overlays[{i}].then[{j}] needs an animation name")
+                for k in ("delay", "mix"):
+                    if q.get(k) is not None and not isinstance(q[k], (int, float)):
+                        raise RuntimeRenderError(f"overlays[{i}].then[{j}].{k} must be a number (seconds)")
+            if then and o.get("mix_out") is not None:
+                o["then_mix_out"] = o.pop("mix_out")
+        out.append(o)
+    return out
+
+
 # ----------------------------------------------------------------- inputs
 def _skeleton_images_dir(skeleton: Path) -> Path | None:
     if skeleton.suffix.lower() == ".json":
@@ -437,6 +462,7 @@ def render(
 ) -> dict:
     if format not in FORMATS:
         raise RuntimeRenderError(f"format must be one of {', '.join(FORMATS)}")
+    ov = _overlays(overlays)
     if format != "png" and not animation and time is None and format != "frames" and not times:
         raise RuntimeRenderError(f"format {format} needs an animation")
     if format == "sheet" and width is None and height is None and scale == 1.0:
@@ -459,7 +485,7 @@ def render(
             # Debug lines are 1 px wide: downscaling would wash them out.
             "supersample": 1 if debug else supersample,
             "crop": crop, "out_dir": str(frames_dir), "prefix": "frame_",
-            "overlays": overlays or [], "loop": loop, "mix": mix,
+            "overlays": ov, "loop": loop, "mix": mix,
             "debug": ({} if debug is True else debug) if debug else None,
             "track": track_bones or None,
         }
@@ -572,6 +598,7 @@ def sample(
     """Bone world transforms over an animation as the official runtime
     computes them (constraints and physics applied), without drawing:
     {times, tracks: {bone: {x, y, rotation, scaleX, scaleY}}, events}."""
+    ov = _overlays(overlays)
     with tempfile.TemporaryDirectory(prefix="spine-mcp-") as tmp:
         sk, at, _ = resolve_inputs(skeleton, atlas, Path(tmp))
         rt = ensure_runtime(runtime_line_for(sk, runtime_version))
@@ -579,7 +606,7 @@ def sample(
             "mode": "sample", "runtime_dir": str(rt.dir), "runtime_version": rt.version,
             "skeleton": str(sk), "atlas": str(at), "skin": skin, "animation": animation,
             "fps": fps, "duration": duration, "loops": loops, "include_last": include_last,
-            "warmup": warmup, "overlays": overlays or [], "loop": loop, "mix": mix,
+            "warmup": warmup, "overlays": ov, "loop": loop, "mix": mix,
             "times": times, "track": bones or ["*"],
         }, timeout)
     if not res.get("ok"):
