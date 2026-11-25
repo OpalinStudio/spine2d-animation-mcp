@@ -215,6 +215,17 @@ def test_track_zero_overlay_crossfades_with_mix(runtime_ok, walker):
     assert 10 < mid < 30 and end == pytest.approx(40, abs=0.01)  # halfway through the crossfade
 
 
+def test_one_shot_layer_fades_back_to_the_track_below_with_mix_out(runtime_ok, walker):
+    def head(overlay):
+        s = rr.sample(walker, "low", bones=["head"], times=[0.2, 1.2, 1.8], loop=True, duration=2,
+                      overlays=[{"track": 1, "animation": "high", "start": 0.3, **overlay}])
+        return [r - s["tracks"]["head"]["rotation"][0] for r in s["tracks"]["head"]["rotation"]]
+
+    assert head({}) == pytest.approx([0, 40, 40], abs=0.01)  # held on its last frame forever
+    _, fading, back = head({"mix_out": 0.2})  # the empty animation mixes in over the last 0.2 s
+    assert 5 < fading < 35 and back == pytest.approx(0, abs=0.01)
+
+
 def test_onion_render_with_bone_trails_and_preview(runtime_ok, walker, tmp_path):
     from PIL import Image
 

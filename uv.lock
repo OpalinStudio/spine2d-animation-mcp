@@ -1048,10 +1048,11 @@ wheels = [
 
 [[package]]
 name = "spine2d-mcp"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
+    { name = "numpy" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "psd-tools" },
@@ -1067,6 +1068,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "playwright", specifier = ">=1.64.1" },
     { name = "psd-tools", specifier = ">=1.9.32" },

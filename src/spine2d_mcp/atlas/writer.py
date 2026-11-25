@@ -61,8 +61,19 @@ def compose_pages(
     images: dict[str, Image.Image],
     stem: str,
     out_dir: str | Path,
+    bleed: int = 2,
 ) -> list[Path]:
-    """Blit each region's PNG onto its atlas page and save the page PNG(s)."""
+    """Blit each region's PNG onto its atlas page and save the page PNG(s).
+
+    `bleed` px of the art's colours are spread under the fully transparent
+    pixels around it (alpha untouched), as Spine's own packer does for
+    straight-alpha atlases: an engine that filters the texture without
+    premultiplying it then blends the outline with its own colour instead of
+    black. Keep it at or below the packing padding."""
+    import numpy as np
+
+    from ..spine.art import bleed_colors
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     total = len(layout.pages)
@@ -75,6 +86,8 @@ def compose_pages(
 
     paths: list[Path] = []
     for i, page in enumerate(pages):
+        if bleed > 0:
+            page = Image.fromarray(bleed_colors(np.asarray(page), bleed))
         p = out_dir / _page_name(stem, i, total)
         page.save(p, "PNG")
         paths.append(p)

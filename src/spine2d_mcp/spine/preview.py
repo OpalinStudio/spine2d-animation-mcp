@@ -56,38 +56,24 @@ def _resolve_images(skeleton_path: Path, data: dict, images_dir: str | None) -> 
     return guess if guess.exists() else None
 
 
-def render(
-    data: dict,
-    out_path: str | Path,
-    skeleton_path: str | Path | None = None,
-    animation: str | None = None,
-    time: float = 0.0,
-    skin: str | None = None,
-    images_dir: str | None = None,
-    atlas_path: str | None = None,
-    size: tuple[int, int] | None = None,
-    padding: int = 20,
-    background: str | None = "#2b2b2b",
-    show_bones: bool = False,
-    scale: float = 1.0,
-) -> dict:
-    skeleton_path = Path(skeleton_path) if skeleton_path else Path(out_path)
-    atlas = read_atlas(atlas_path) if atlas_path else None
-    if atlas is None:
-        guess = skeleton_path.with_suffix(".atlas")
-        if guess.exists() and not images_dir:
-            atlas = read_atlas(guess)
-    src = ImageSource(_resolve_images(skeleton_path, data, images_dir), atlas)
-    pose = Pose(data, animation=animation, time=time)
+class DrawItem:
+    """One attachment to draw: its image, world-space quad (region) or
+    vertices (mesh), in draw order."""
 
+    __slots__ = ("slot", "bone", "kind", "img", "points", "att", "color", "path")
+
+    def __init__(self, slot, bone, kind, img, points, att, color, path):
+        self.slot, self.bone, self.kind, self.img = slot, bone, kind, img
+        self.points, self.att, self.color, self.path = points, att, color, path
+
+
+def collect_items(data: dict, pose: Pose, src: ImageSource, skin: str | None = None) -> list[DrawItem]:
+    """The region / mesh attachments visible in `pose` (default skin, then
+    `skin`), back to front. `img` is None when the image is missing."""
     skins = {s["name"]: s for s in data.get("skins") or []}
     active = [skins.get("default")] + ([skins.get(skin)] if skin and skin != "default" else [])
     active = [s for s in active if s]
-
-    items: list[tuple[str, Image.Image | None, Any, list[float]]] = []
-    missing: list[str] = []
-    xs: list[float] = []
-    ys: list[float] = []
+    items: list[DrawItem] = []
     for slot_name in pose.draw_order:
         st = pose.slots[slot_name]
         if not st.visible or not st.attachment:
@@ -117,20 +103,57 @@ def render(
             idx = seq.get("setup", 0) + seq.get("start", 1)
             digits = seq.get("digits", 0)
             path = f"{path}{str(idx).zfill(digits)}"
-        img = src.get(path)
-        if img is None:
-            missing.append(path)
         color = [a * b for a, b in zip(st.color, _att_color(att))]
         if atype == "region":
-            quad = _region_quad(att, bone)
-            xs += [p[0] for p in quad]
-            ys += [p[1] for p in quad]
-            items.append(("region", img, (quad, att), color))
+            points = _region_quad(att, bone)
         elif atype == "mesh":
-            verts = _mesh_world(att, pose, bone, att_skin, slot_name, st.attachment)
-            xs += [p[0] for p in verts]
-            ys += [p[1] for p in verts]
-            items.append(("mesh", img, (verts, att), color))
+            points = _mesh_world(att, pose, bone, att_skin, slot_name, st.attachment)
+        else:
+            continue
+        items.append(DrawItem(slot_name, st.bone, atype, src.get(path), points, att, color, path))
+    return items
+
+
+def draw_item(canvas: Image.Image, item: DrawItem, to_px) -> None:
+    """Draw one item on `canvas`; `to_px(x, y)` maps world units to pixels."""
+    if item.img is None:
+        return
+    tinted = _tint(item.img, item.color)
+    pts = [to_px(*p) for p in item.points]
+    if item.kind == "region":
+        _draw_region(canvas, tinted, pts)
+    else:
+        _draw_mesh(canvas, tinted, pts, item.att)
+
+
+def render(
+    data: dict,
+    out_path: str | Path,
+    skeleton_path: str | Path | None = None,
+    animation: str | None = None,
+    time: float = 0.0,
+    skin: str | None = None,
+    images_dir: str | None = None,
+    atlas_path: str | None = None,
+    size: tuple[int, int] | None = None,
+    padding: int = 20,
+    background: str | None = "#2b2b2b",
+    show_bones: bool = False,
+    scale: float = 1.0,
+) -> dict:
+    skeleton_path = Path(skeleton_path) if skeleton_path else Path(out_path)
+    atlas = read_atlas(atlas_path) if atlas_path else None
+    if atlas is None:
+        guess = skeleton_path.with_suffix(".atlas")
+        if guess.exists() and not images_dir:
+            atlas = read_atlas(guess)
+    src = ImageSource(_resolve_images(skeleton_path, data, images_dir), atlas)
+    pose = Pose(data, animation=animation, time=time)
+
+    items = collect_items(data, pose, src, skin)
+    missing = [it.path for it in items if it.img is None]
+    xs = [p[0] for it in items for p in it.points]
+    ys = [p[1] for it in items for p in it.points]
     for bn in pose.bones.values():
         xs += [bn.worldX, bn.tip[0]]
         ys += [bn.worldY, bn.tip[1]]
@@ -152,16 +175,8 @@ def render(
 
     bg = _parse_bg(background)
     canvas = Image.new("RGBA", (W, H), bg)
-    for kind, img, payload, color in items:
-        if img is None:
-            continue
-        tinted = _tint(img, color)
-        if kind == "region":
-            quad, att = payload
-            _draw_region(canvas, tinted, [to_px(*p) for p in quad])
-        else:
-            verts, att = payload
-            _draw_mesh(canvas, tinted, [to_px(*p) for p in verts], att)
+    for item in items:
+        draw_item(canvas, item, to_px)
     if show_bones:
         d = ImageDraw.Draw(canvas)
         for bn in pose.bones.values():

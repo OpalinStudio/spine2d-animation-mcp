@@ -6,6 +6,7 @@ Le serveur travaille sur les fichiers JSON de squelette Spine. Chaque outil char
 
 ## Ce que ça couvre
 
+- **Contrôle du dessin avant le rig** : `check_art` mesure ce qu'un rig ne peut pas corriger, sur un dossier de pièces, un atlas ou les images d'un squelette : bords durs (sans lissage), contours effilochés ou déchirés, fragments détachés, liseré clair de l'ancien fond, zones qui laissent voir à travers, pièce plus floue que les autres. Avec un squelette, il signale aussi les images affichées plus grandes que leurs pixels et les **articulations qui s'ouvrent quand on les plie** (pièces coupées bord à bord, rien de dessiné dessous). L'outil renvoie une planche des pièces en défaut, avec les défauts peints dessus. `clean_art` répare sans jamais changer le dessin ni sa taille : suppression des fragments, lissage des bords durs, rabotage des pointes fines, débord de couleur sous le bord. Prévu pour des dessins générés par IA ou détourés.
 - **PSD → rig** : un PSD en calques devient os, slots, attachments, atlas et une image par calque, avec os orientés, IK jambes/bras et animations de départ en option. Les calques nommés comme des parties du corps forment le rig humanoïde (`forearm_*` et `shin_*` donnent de vrais coudes et genoux). Tous les autres calques sont gardés avec leur propre os, rattaché à la partie du corps dont ils occupent le groupe (cheveux et yeux dans un groupe `head` suivent la tête). Un groupe `[bone]` devient un os, un calque `<nom>[pivot]` fixe un pivot, `[ignore]` écarte un calque. Un accessoire ou un symbole de slot s'importe donc aussi.
 - **Squelette** : os (coordonnées locales ou monde, reparentage qui garde la pose, modes d'héritage, icône 4.3, visibilité), slots, ordre de dessin, skins.
 - **Attachments** : région (avec séquences d'images), mesh (grille, contour polygonal ou explicite), poids automatiques, linked mesh (4.3 : source dans un autre slot), bounding box, clipping (4.3 : inverse et convexe), point, path.
@@ -13,7 +14,7 @@ Le serveur travaille sur les fichiers JSON de squelette Spine. Chaque outil char
 - **Animation** : toutes les timelines 4.3 (os, slot, IK, transform, path, physique, slider, deform, sequence, événements), courbes bezier et presets d'easing, ordre de dessin complet ou partiel, **dossiers d'ordre de dessin 4.3**, retiming.
 - **Retouche des clés** : `offset_keys` décale des clés dans le temps (sur une boucle, la courbe est coupée exactement au point de bouclage ; `stagger` retarde chaque os d'une chaîne, c'est l'action en décalé d'un bras ou d'une queue), `scale_keys` exagère ou adoucit un mouvement sans toucher au timing, `copy_keys` copie d'un os à l'autre (miroir et demi-cycle plus tard pour l'autre côté).
 - **Animations procédurales** : idle, marche, course, saut, salut, hochement de tête, clignement, flottement, rebond (squash & stretch), tremblement, oscillation, follow-through, flash, fondu, pulsation, teinte. Sur un rig en IK, les presets animent les cibles IK : la marche et la course posent les pieds au sol (vitesse constante, communiquée pour le jeu), le saut plie et replie les jambes, et aucune clé de rotation ne reste sans effet.
-- **Relecture qualité** (`analyze_animation`) : ce qu'un lead animation entourerait, avec l'appel d'outil qui corrige. À partir des clés : saut ou accroc au bouclage, mouvement linéaire (mécanique), clés sans effet sous une IK, côtés gauche et droit identiques, membre animé d'un seul bloc, squash sans conservation du volume. À partir du runtime officiel : écart de boucle par os, saut sur une image, image figée, contacts des pieds, glissement et vitesse du sol. `runtime_sample` donne la position, la rotation et l'échelle monde de n'importe quel os à chaque image, après IK et physique, ainsi que les événements déclenchés.
+- **Relecture qualité** (`analyze_animation`) : ce qu'un lead animation entourerait, avec l'appel d'outil qui corrige. À partir des clés : saut ou accroc au bouclage, mouvement linéaire (mécanique), clés sans effet sous une IK, côtés gauche et droit identiques, membre animé d'un seul bloc, squash sans conservation du volume. À partir du runtime officiel : écart de boucle par os, saut sur une image, image figée, contacts des pieds, glissement et vitesse du sol, et l'**amplitude** (part des os dessinés qui bougent, déplacement moyen, alerte `timid_motion` quand presque tout le personnage reste figé). `runtime_sample` donne la position, la rotation et l'échelle monde de n'importe quel os à chaque image, après IK et physique, ainsi que les événements déclenchés.
 - **Animations de symboles de slot** : `symbol_idle` (boucle au repos), `symbol_land` (arrivée en fin de rouleau), `symbol_win` (gain : contraction, pop, flash, gelée), `symbol_anticipation` (tension avant le 3e scatter), `symbol_dim` (assombrir les perdants). Elles partent et reviennent à la pose de setup, donc s'enchaînent dans le jeu.
 - **Rendu par le runtime officiel** (`runtime_render`) : le vrai `spine-webgl` d'Esoteric dans un Chromium invisible. Physique, IK, clipping, additif et teinte deux couleurs sont calculés comme dans le jeu. PNG, dossier d'images, planche, **onion** (images fantômes superposées et trajectoire des os suivis, un point par image : arcs et espacement sur une seule image fixe), GIF, APNG, WebP, MP4, WebM avec alpha, MOV ProRes 4444 avec alpha. **L'outil renvoie l'image à l'assistant** (une planche pour les formats animés) : il relit ce qu'il a fait. `debug` dessine os, meshes, clipping et paths sur le dessin, `times` capture les poses clés, `overlays` et `mix` jouent d'autres pistes et des transitions en fondu comme dans le jeu.
 - **Rendu par l'éditeur Spine** (`editor_render`) : le rendu de référence pour les livrables. GIF, APNG, WebM, MOV, AVI ou séquences PNG / WebP / JPEG, depuis un `.spine` ou un JSON importé dans un projet temporaire.
@@ -21,7 +22,7 @@ Le serveur travaille sur les fichiers JSON de squelette Spine. Chaque outil char
 - **Aperçu web** (`export_web_preview`) : un seul fichier HTML avec le Spine Web Player, boutons d'animation, de skin, de fond et de vitesse. Vérifié automatiquement en taille téléphone et bureau.
 - **Pack pour le jeu** (`export_game_pack`) : `.skel` ou `.json` + atlas par l'éditeur, alpha prémultiplié, plusieurs résolutions (`@0.5x`), poids mémoire des textures, puis contrôle de chargement dans le runtime.
 - **Aperçu Python rapide** : image PNG, planche ou GIF (approximatif, sans contraintes).
-- **Atlas** : empaquetage, lecture, dépaquetage en Python pur.
+- **Atlas** : empaquetage (avec débord des couleurs sous le bord transparent, comme le packer de Spine en alpha droit), lecture, dépaquetage en Python pur.
 - **CLI Spine** : export JSON/binaire/atlas/PNG/GIF/vidéo, import de données dans un projet `.spine` (fusion et import d'animation 4.3), texture packer, unpack, clean up, infos projet, derniers réglages d'export (4.3), overrides `--set` (4.3).
 
 La liste complète des outils est dans le [README anglais](../README.md#what-it-covers).
@@ -83,6 +84,32 @@ Si `uv` n'est pas trouvé, mettre son chemin complet (`which uv` sur Mac, `where
 
 **Claude Code** (macOS, Windows ou Linux) : `claude mcp add spine -- uv --directory /chemin/vers/spine2d-animation-mcp run spine2d-mcp`
 
+**Codex CLI** : `codex mcp add spine -- uv --directory /chemin/vers/spine2d-animation-mcp run spine2d-mcp`. L'agent qui génère les dessins avec la génération d'images de Codex peut alors appeler `check_art` sur ce qu'il vient de produire, lire les défauts et la planche annotée, puis régénérer les pièces refusées, avant tout rig (prompt `prepare_art`).
+
+### Agent Skill (Claude Code / Codex / Cursor / Antigravity)
+
+Le dépôt inclut un **Agent Skill** prêt à l'emploi dans [`skills/spine2d-animation/`](../skills/spine2d-animation/SKILL.md) pour guider l'IA selon un workflow d'animateur en plusieurs passes (contrôle art → rig IK/physique → blocking `stepped` → courbes Bézier & arcs → overlap & action secondaire → relecture visuelle planche + onion → validation runtime) :
+
+- [`SKILL.md`](../skills/spine2d-animation/SKILL.md) — protocole complet en 4 passes
+- [`references/acting-and-timing.md`](../skills/spine2d-animation/references/acting-and-timing.md) — classes de poids, timings chiffrés, les 30 presets de courbes, conservation du volume, réglages physique 4.3
+- [`references/anti-patterns.md`](../skills/spine2d-animation/references/anti-patterns.md) — chaque alerte d'`analyze_animation` et défaut visuel (planche/onion) avec sa correction exacte
+- [`references/art-and-rig-prep.md`](../skills/spine2d-animation/references/art-and-rig-prep.md) — découpage des pièces, prompts de génération d'images, boucle `check_art`/`clean_art`, checklist de rig
+- [`references/recipes.md`](../skills/spine2d-animation/references/recipes.md) — recettes prêtes à l'emploi (idle vivant + blink en track 1, marche IK sans glissement, attaque, saut, relais IK→FK, sliders 4.3, symboles de slot)
+- [`references/pro-benchmarks.md`](../skills/spine2d-animation/references/pro-benchmarks.md) + [`scripts/fetch_pro_example.py`](../skills/spine2d-animation/scripts/fetch_pro_example.py) — benchmarks chiffrés tirés de 20 exemples professionnels officiels Esoteric Software Spine 4.3 (la série en 8 épisodes sur les principes d'animation + `spineboy`, `celestial-circus`, `diamond`, `owl`, `raptor`, `cloud-pot`…), avec téléchargement à la demande dans le cache local pour les inspecter directement via `spine2d-mcp` (sans jamais embarquer d'assets sous licence dans le dépôt)
+
+Installation (lien symbolique dans le dossier skills de votre client) :
+
+```bash
+# Claude Code
+ln -s /chemin/vers/spine2d-animation-mcp/skills/spine2d-animation ~/.claude/skills/spine2d-animation
+
+# Codex CLI
+ln -s /chemin/vers/spine2d-animation-mcp/skills/spine2d-animation ~/.codex/skills/spine2d-animation
+
+# Ou via skills CLI
+npx skills add OpalinStudio/spine2d-animation-mcp
+```
+
 **Linux** : Claude Desktop n'existe pas officiellement sous Linux, on passe donc par Claude Code ou tout autre client MCP. Spine est cherché dans `~/Spine/Spine.sh`, `/opt/Spine/Spine.sh`, `/usr/local/Spine/Spine.sh` puis dans le `PATH`. Sinon, définir `SPINE_EXE=/chemin/vers/Spine.sh`.
 
 Sous Windows, `Spine.com` (version console) est préféré à `Spine.exe` pour la ligne de commande, car il affiche la sortie et attend la fin de l'export.
@@ -116,7 +143,8 @@ L'outil `spine_status` indique quel exécutable a été trouvé.
 
 ## Méthode conseillée
 
-1. `import_psd_to_spine` sur un PSD en calques, ou `create_skeleton` pour partir de zéro. Puis `runtime_render` avec `debug=true` pour vérifier les pivots.
+0. `check_art` sur le dossier des pièces, avant tout rig. `clean_art` pour les bords durs et les fragments, et on redessine ou on régénère les pièces qui gardent un avertissement. `spine_reference("art")` décrit comment dessiner ou générer un personnage pour l'animation.
+1. `import_psd_to_spine` sur un PSD en calques, ou `create_skeleton` pour partir de zéro. Puis `runtime_render` avec `debug=true` pour vérifier les pivots, et `check_art` avec le squelette pour les articulations.
 2. Rig : IK sur jambes et bras, physique sur cheveux et vêtements, meshes là où une image doit plier, sliders pour les expressions, clipping, skins.
 3. Animation : poser les poses clés avec `set_keyframes` (ou une base avec `generate_animation`), puis les courbes, `offset_keys` pour le décalé, `scale_keys` pour l'exagération.
 4. Relecture, à chaque fois : `analyze_animation`, puis `runtime_render` en planche sur le fond du jeu et en onion avec `track_bones`. Corriger et recommencer.
@@ -132,6 +160,7 @@ Un fichier Spine valide n'est pas une bonne animation. Ce qui fait la différenc
 - **L'assistant doit voir son travail.** Un modèle ne peut pas regarder un GIF. `runtime_render` lui renvoie une image fixe qu'il sait lire : une planche (les poses), un rendu onion (le mouvement : images fantômes et trajectoire de chaque os suivi, un point par image, donc points serrés = lent, points écartés = rapide, et la ligne pointillée est l'arc), ou un rendu debug (le rig sur le dessin).
 - **Des chiffres pour ce qu'une image ne montre pas.** `analyze_animation` et `runtime_sample` lisent le mouvement dans le runtime officiel, après IK et physique : où la boucle saute, quel os fait un à-coup, si un pied glisse, à quelle vitesse le sol doit défiler.
 - **La méthode est dans le serveur.** Les instructions du serveur demandent à l'assistant d'analyser et de regarder après chaque modification. `spine_reference("quality")` relie les principes d'animation aux appels d'outils, avec des durées chiffrées. `spine_reference("recipes")` donne les timings d'une attaque, d'une marche, d'un idle, d'un impact. Les prompts `animate`, `review_animation` et `rig_from_psd` déroulent la boucle complète.
+- **Un dessin fait pour l'animation.** L'essentiel de ce qui paraît « de mauvaise qualité » se joue avant la première clé. Des pièces découpées dans une illustration finie ne peuvent pas prendre une autre pose, une main dessinée en une seule image ne plie pas un doigt, un masque à bords durs scintille dès qu'il tourne. `spine_reference("art")` explique comment concevoir et découper un personnage : pose neutre, une image par partie mobile, extrémités arrondies cachées aux articulations, plusieurs dessins de main à échanger, effets en séquences d'images. `check_art` mesure le résultat avant tout rig, `clean_art` répare ce qui peut l'être.
 - **Un rig fait pour l'animation.** Des membres en deux os avec IK (genoux et coudes), de la physique sur tout ce qui pend, des meshes pondérés là où une image plie. Des clés ne sauvent pas un rig raide.
 - **Donner la direction artistique.** Indiquer l'humeur, le poids du personnage, la couleur de fond du jeu et la durée de mix. Demander la planche et le rendu onion dans la réponse.
 - **Finir dans l'éditeur quand ça compte.** La peinture de poids, le tracé de mesh à la main et les derniers 10 % de finition d'une animation héros vont plus vite à la main. `spine_import_data` donne le projet et les clés restent éditables.
@@ -148,7 +177,8 @@ Exemples de demandes orientées qualité :
 - Les fichiers `.spine` sont un format binaire privé : on modifie le JSON exporté puis on le réimporte (`spine_import_data`).
 - L'aperçu Python (`render_preview`) ne simule ni les contraintes ni le clipping. Utiliser `runtime_render` (runtime officiel) ou `editor_render` (éditeur).
 - Ce qui se fait à la souris reste dans l'éditeur : peinture de poids, tracé d'un mesh sur l'image, éditeur de courbes. Le serveur écrit les mêmes données (poids, sommets, courbes), sans la vue interactive.
-- `analyze_animation` est un ensemble d'heuristiques : il indique où regarder, il ne remplace pas la lecture de la planche et du rendu onion.
+- `analyze_animation` et `check_art` sont des heuristiques : ils indiquent où regarder, ils ne remplacent pas la lecture des planches. `check_art` ne juge pas le dessin lui-même (design, anatomie, cohérence de style).
+- `clean_art` ne redessine pas : un contour déchiré, un liseré, un recouvrement manquant à une articulation ou une pièce floue doivent être régénérés.
 - Les presets de personnage supposent un personnage tourné vers +x (passer `facing: -1` à la marche, ou inverser `bendPositive` sur l'IK).
 - Sur fond transparent, les slots en mode additif n'ajoutent leur lumière à rien : les halos paraissent absents. Spine fait pareil. Passer `background` avec la couleur du jeu pour les juger (l'outil prévient).
 - Spine 4.3.26 : l'import JSON plante sur une timeline `rgba` ou `rgb` courbée d'un slot à teinte deux couleurs. Le serveur la réécrit automatiquement en `rgba2` / `rgb2`, avec le même rendu.

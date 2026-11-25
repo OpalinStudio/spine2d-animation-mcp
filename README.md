@@ -10,6 +10,7 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 
 | Area | Tools |
 |---|---|
+| **Art control (before the rig)** | `check_art`: measures what a rig cannot fix, on a folder of parts, an atlas or a skeleton's images: hard (non-antialiased) edges, frayed or torn outlines, detached fragments, a light fringe of the removed background, see-through patches, a part blurrier than the others; with a skeleton, images drawn larger than their pixels and **joints that open a hole when bent** (parts cut edge to edge, nothing drawn underneath). Returns a sheet of the flagged parts with the defects painted on. `clean_art`: repairs that never change the drawing or its size (remove fragments, antialias hard edges, trim thin spikes, bleed colours under the rim). Made for AI-generated or cut-out art |
 | **PSD → rig** | `import_psd_to_spine`: layered PSD → bones, slots, region attachments, atlas, per-layer images, oriented bones, optional leg/arm IK and starter animations. Humanoid layer names build the character rig (with `forearm_*` / `shin_*` for real elbows and knees); every other layer is kept with its own bone (parented by group), `[bone]` groups, `[pivot]` markers, `[ignore]`, so props and slot symbols import too |
 | **Skeleton** | `create_skeleton`, `inspect_skeleton`, `validate_skeleton`, `get_element` |
 | **Bones** | `add_bone` (local or world coords), `update_bone` (rename with every reference, reparent keeping the world pose, inherit modes, 4.3 icon size/rotation, visibility, skin-required), `remove_bone` (cascades, remaps mesh weights) |
@@ -21,15 +22,15 @@ It works on Spine skeleton JSON files: every tool loads the file, applies one ch
 | **Animation** | `manage_animation` (create/delete/rename/duplicate, 4.3 color), `set_keyframes` on **every** 4.3 timeline (bone, slot, IK, transform, path, physics incl. skeleton-wide wind/gravity, slider, deform, sequence), easing presets and bezier curves, `set_draw_order_keys` (full or partial orders, **4.3 draw order folders**), `retime_animation`, `clear_timeline` |
 | **Key editing** | `offset_keys` (shift keys in time; on a loop the curve is cut exactly at the loop point; `stagger` delays each bone of a chain = overlapping action), `scale_keys` (exaggerate / soften values, curves keep their shape), `copy_keys` (bone → bone or animation → animation, mirrored and half a cycle later for the other side) |
 | **Procedural** | `generate_animation`: idle, walk, run, jump, wave, nod, head shake/tilt, blink, hover, bounce (squash & stretch), shake, sine `oscillate`, `follow_through` (overlapping action down a chain), flash (tint black), fade in/out, pulse, tint. On IK rigs the presets key the IK targets: walk / run plant the feet (constant ground speed, reported for the game), jump squats and tucks, no dead rotation keys |
-| **Quality review** | `analyze_animation`: what an animation lead would circle, each with the tool call that fixes it. From the keys: loop pops and hitches, linear (mechanical) motion, dead keys under IK, twinning, limbs without overlap, squash without volume. From the official runtime: per-bone loop gap, single-frame pops, dead holds, foot contacts, foot slide and ground speed. `runtime_sample`: world position / rotation / scale of any bone per frame after IK and physics, plus the events fired |
+| **Quality review** | `analyze_animation`: what an animation lead would circle, each with the tool call that fixes it. From the keys: loop pops and hitches, linear (mechanical) motion, dead keys under IK, twinning, limbs without overlap, squash without volume. From the official runtime: per-bone loop gap, single-frame pops, dead holds, foot contacts, foot slide and ground speed, and the **amplitude** (share of the drawn bones that move, their average range, `timid_motion` when most of the character stays frozen). `runtime_sample`: world position / rotation / scale of any bone per frame after IK and physics, plus the events fired |
 | **Slot symbols** | `generate_animation` presets `symbol_idle` (rest loop), `symbol_land` (reel stop), `symbol_win` (squeeze, pop, tint-black flash, glow, jelly wobble), `symbol_anticipation` (near-win tease), `symbol_dim` (darken losers). They start and end on the setup pose so they chain at runtime. On a reel-cell tile they animate the character, not the background / frame (warning otherwise) |
 | **Official runtime render** | `runtime_render`: Esoteric's own `spine-webgl` in headless Chromium, so physics, IK, clipping, additive and tint black render exactly as in a web game: PNG, frames, contact sheet, **onion** (ghosted frames + bone trails with one dot per frame: arcs and spacing in one still), GIF, APNG, WebP, MP4, WebM with alpha, MOV ProRes 4444 with alpha. **The tool returns the picture to the assistant** (a contact sheet for animated formats), so it reviews what it made. `debug` draws bones / meshes / clipping / paths over the art, `times` captures key poses, `overlays` + `mix` play other tracks and crossfaded transitions like the game. `runtime_validate`: load JSON/.skel + atlas in the official runtime and report what it sees or the exact error |
 | **Editor render** | `editor_render`: the Spine editor's own export (reference quality): GIF, APNG, WebM, MOV, AVI or PNG / WebP / JPEG sequences, from a `.spine` or a JSON imported into a throwaway project |
 | **Delivery** | `export_web_preview`: one self-contained HTML with the Spine Web Player (animation / skin / background / speed buttons), auto-checked at phone and desktop sizes. `export_game_pack`: `.skel`/`.json` + atlas by the editor, premultiplied alpha, extra resolutions, texture memory report, runtime load check |
 | **Preview** | `render_preview`: quick pure-Python PNG frame, contact sheet or GIF (approximate: no constraints or clipping) |
-| **Atlas** | `pack_atlas`, `read_atlas`, `unpack_atlas_images` (pure Python) |
+| **Atlas** | `pack_atlas` (colours bled under the transparent rim, like Spine's packer does for straight alpha), `read_atlas`, `unpack_atlas_images` (pure Python) |
 | **Spine CLI** | `spine_status`, `spine_cli_help`, `spine_export` (JSON/binary/+pack/PNG/any settings, clean up, 4.3 `--set` overrides), `spine_import_data` (data → `.spine` project, 4.3 animation import / merge), `spine_pack`, `spine_unpack`, `spine_clean_up`, `spine_project_info`, `spine_last_export_settings`, `write_export_settings`, raw `spine_cli` |
-| **Reference** | `spine_reference`: workflow, **quality** (animation principles mapped to tool calls, timing numbers, loop / transition / physics rules), **recipes**, delivery **checklist**, timelines, curves, constraints, presets, 4.3 changes. Also served as MCP resources (`spine://guide/...`) and prompts (`animate`, `review_animation`, `rig_from_psd`) |
+| **Reference** | `spine_reference`: workflow, **art** (how parts must be designed, split, drawn or generated to be animated), **quality** (animation principles mapped to tool calls, timing numbers, loop / transition / physics rules), **recipes**, delivery **checklist**, timelines, curves, constraints, presets, 4.3 changes. Also served as MCP resources (`spine://guide/...`) and prompts (`prepare_art`, `animate`, `review_animation`, `rig_from_psd`) |
 
 The Spine 4.3 format is taken from the official reader (`reference/SkeletonJson.java`, spine-runtimes branch 4.3). The validator accepts every skeleton exported by Spine 4.3 in the official spine-runtimes examples.
 
@@ -91,6 +92,32 @@ If `uv` is not found, use its full path (`which uv` / `where uv`).
 
 **Claude Code**: `claude mcp add spine -- uv --directory /path/to/spine2d-animation-mcp run spine2d-mcp`
 
+**Codex CLI**: `codex mcp add spine -- uv --directory /path/to/spine2d-animation-mcp run spine2d-mcp`. The agent that generates the art with Codex's image generation can then call `check_art` on what it just produced, read the findings and the annotated sheet, and regenerate the parts that fail, before any rigging (prompt `prepare_art`).
+
+### Agent Skill (Claude Code / Codex / Cursor / Antigravity)
+
+This repository ships an Agent Skill in [`skills/spine2d-animation/`](skills/spine2d-animation/SKILL.md) that enforces a senior-animator multi-pass workflow (art QA → IK/physics rig → stepped blocking → Bezier curves & arcs → overlap/secondary motion → visual sheet & onion review → runtime validation) with progressive-disclosure reference guides:
+
+- [`skills/spine2d-animation/SKILL.md`](skills/spine2d-animation/SKILL.md) — core multi-pass animation playbook
+- [`references/acting-and-timing.md`](skills/spine2d-animation/references/acting-and-timing.md) — weight classes, timing tables, all 30 curve presets, squash & stretch math, physics tuning
+- [`references/anti-patterns.md`](skills/spine2d-animation/references/anti-patterns.md) — every `analyze_animation` warning + visual sheet/onion defects mapped to exact fixes
+- [`references/art-and-rig-prep.md`](skills/spine2d-animation/references/art-and-rig-prep.md) — part slicing, AI image-generation prompts, `check_art`/`clean_art` loop, rig checklist
+- [`references/recipes.md`](skills/spine2d-animation/references/recipes.md) — production recipes (living idle + track-1 blink, IK walk, melee attack, jump, IK/FK handoff, 4.3 sliders, slot symbols)
+- [`references/pro-benchmarks.md`](skills/spine2d-animation/references/pro-benchmarks.md) + [`scripts/fetch_pro_example.py`](skills/spine2d-animation/scripts/fetch_pro_example.py) — quantitative benchmarks from 20 official Esoteric Software Spine 4.3 examples (8-part Animation Principles series + `spineboy`, `celestial-circus`, `diamond`, `owl`, `raptor`, `cloud-pot`...) with an on-demand local cache fetcher to inspect real pro rigs with `spine2d-mcp` (never vendored in git)
+
+Install it locally by copying or symlinking `skills/spine2d-animation` into your client's skills folder:
+
+```bash
+# Claude Code (user-wide)
+ln -s /path/to/spine2d-animation-mcp/skills/spine2d-animation ~/.claude/skills/spine2d-animation
+
+# Codex CLI (user-wide)
+ln -s /path/to/spine2d-animation-mcp/skills/spine2d-animation ~/.codex/skills/spine2d-animation
+
+# Or via skills CLI
+npx skills add OpalinStudio/spine2d-animation-mcp
+```
+
 ### Environment variables
 
 | Variable | Meaning |
@@ -118,6 +145,7 @@ A valid Spine file is not a good animation. What makes the difference:
 - **The assistant must see its work.** A model cannot watch a GIF. `runtime_render` returns a still it can read: a contact sheet (the poses), an onion render (the motion: ghosts, plus the path of each tracked bone with one dot per frame, so close dots = slow, wide dots = fast, and the dotted line is the arc), or a debug render (the rig over the art).
 - **Numbers for what a picture can't show.** `analyze_animation` and `runtime_sample` read the motion from the official runtime, after IK and physics: where the loop jumps, which bone pops, whether a foot slides, how fast the ground must move.
 - **The method is in the server.** The server instructions tell the assistant to analyze and look after every change; `spine_reference("quality")` maps the animation principles to tool calls with timing numbers; `spine_reference("recipes")` gives key timings for an attack, a walk, an idle, an impact; the `animate` / `review_animation` prompts run the whole loop.
+- **Art made for animation.** Most of what reads as low quality is decided before the first key: parts cut out of one finished illustration cannot take another pose, a hand drawn as one image cannot bend a finger, a hard-edged mask shimmers when it rotates. `spine_reference("art")` says how to design and split a character (neutral pose, one image per moving part, hidden rounded ends at the joints, several hand drawings to swap, effects as frame sequences); `check_art` measures the result before any rigging, `clean_art` repairs what can be repaired.
 - **Rig for animation first.** Two-bone limbs with IK (knees and elbows), physics on everything loose, meshes with weights where an image bends. A stiff rig cannot be saved by keys.
 - **Give the art direction.** Tell the assistant the mood, the weight of the character, the game's background color and the mix duration; ask for the sheet and the onion in the answer.
 - **Finish in the editor when it matters.** Weight painting, hand-drawn mesh outlines and the last 10 % of polish on a hero animation are faster by hand: `spine_import_data` gives the project, the keys stay editable.
@@ -138,6 +166,7 @@ src/spine2d_mcp/
   spine/constraints.py   IK / transform / path / physics / slider builders, rig helpers
   spine/animation.py     timelines, keys, curve conversion, sampling, key shifting / scaling
   spine/analysis.py      animation review (key-level and runtime-sampled checks)
+  spine/art.py           art review before the rig (cut-out defects, joints) and safe repairs
   spine/curves.py        easing presets -> Spine bezier curves
   spine/generators.py    procedural animations (IK-aware)
   spine/pose.py          world transforms (all inherit modes)
@@ -146,6 +175,7 @@ src/spine2d_mcp/
   atlas/                 packer, writer, reader/unpacker
   cli/spine_cli.py       cross-platform Spine CLI wrapper
   runtime/               official spine-webgl in headless Chromium: render, sample, validate, web preview
+skills/spine2d-animation/ Agent Skill (SKILL.md + acting, anti-patterns, art/rig prep & recipes references)
 reference/               SkeletonJson.java (4.3), spineboy.atlas
 tests/                   pytest suite
 ```
@@ -155,7 +185,8 @@ tests/                   pytest suite
 - `.spine` project files are a private binary format: edit the exported JSON and re-import it (`spine_import_data`).
 - The Python preview (`render_preview`) doesn't simulate constraints or clipping; use `runtime_render` or `editor_render`.
 - Editor-only work stays in the editor: weight painting, mesh tracing on the image, the graph editor. The server writes the same data (weights, vertices, curves) but without the interactive view.
-- `analyze_animation` is a set of heuristics: it says where to look, it does not replace looking at the sheet and the onion render.
+- `analyze_animation` and `check_art` are sets of heuristics: they say where to look, they do not replace looking at the sheets. `check_art` cannot judge the drawing itself (design, anatomy, style consistency).
+- `clean_art` does not redraw: a torn outline, a halo, a missing overlap at a joint or a blurry part must be regenerated.
 - The character presets assume a character facing +x (pass `facing: -1` to walk, or flip the IK `bendPositive`).
 - Over a transparent background, additive slots have nothing to add their light to, so glows look missing (Spine behaves the same). Pass `background` with the game's color to judge them; the tool warns.
 - Spine 4.3.26's JSON import fails on a curved `rgba` / `rgb` timeline of a tint-black (dark) slot. The server rewrites such timelines as `rgba2` / `rgb2` on save (same look) and says so.

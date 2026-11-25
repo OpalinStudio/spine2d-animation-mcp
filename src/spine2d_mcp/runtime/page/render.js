@@ -95,9 +95,11 @@
       if (!data.findAnimation(cfg.animation)) throw new Error("animation not found: " + cfg.animation);
       st.setAnimation(0, cfg.animation, cfg.loop !== false);
     }
-    // Animations set later: [{track, animation, start, loop, mix}], fired when the playhead
-    // reaches `start`, exactly as a game state machine would set them. Track 1+ layers on
-    // top (blink); track 0 replaces the main animation (transition test, with `mix`).
+    // Animations set later: [{track, animation, start, loop, mix, mix_out}], fired when the
+    // playhead reaches `start`, exactly as a game state machine would set them. Track 1+
+    // layers on top (blink); track 0 replaces the main animation (transition test, with
+    // `mix`). `mix_out` queues an empty animation after a one-shot layer, so the track
+    // fades back to the tracks below instead of holding its last frame.
     inst.overlays = (cfg.overlays || []).map((o) => Object.assign({ fired: false }, o))
       .sort((a, b) => a.start - b.start);
     for (const o of inst.overlays) {
@@ -113,6 +115,7 @@
       if (!o.fired && inst.t >= o.start - 1e-6) {
         const entry = inst.st.setAnimation(o.track == null ? 1 : o.track, o.animation, !!o.loop);
         if (o.mix != null) entry.mixDuration = o.mix;
+        if (o.mix_out != null && !o.loop) inst.st.addEmptyAnimation(entry.trackIndex, o.mix_out, 0);
         o.fired = true;
       }
     }

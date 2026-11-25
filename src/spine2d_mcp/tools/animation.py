@@ -482,15 +482,20 @@ def render_preview(
 
 @mcp.tool(annotations=READ_ONLY)
 def spine_reference(
-    topic: Literal["workflow", "quality", "recipes", "checklist", "timelines", "curves",
+    topic: Literal["workflow", "art", "quality", "recipes", "checklist", "timelines", "curves",
                    "constraints", "presets", "attachments", "4.3"] = "workflow",
 ) -> dict:
     """How to work with this server. workflow: the method, step by step.
+    art: how the parts must be designed, split, drawn or generated so they
+    can be animated (read it before producing or accepting any art).
     quality: the animation principles mapped to tool calls, timing numbers,
     loop / transition / physics rules (read it before animating). recipes:
     ready-made key timings (attack, walk, idle, impact, pop, bending
-    meshes...). checklist: what to verify before delivering. timelines /
-    curves / constraints / attachments / presets / 4.3: format cheat sheets."""
+    meshes, an arm that changes pose...). checklist: what to verify before
+    delivering. timelines / curves / constraints / attachments / presets /
+    4.3: format cheat sheets."""
+    if topic == "art":
+        return guide.ART
     if topic == "quality":
         return guide.QUALITY
     if topic == "recipes":

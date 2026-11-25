@@ -149,8 +149,11 @@ def runtime_render(
     "animation": "blink", "start": 1.2}]. Track 0 REPLACES the main animation,
     to check a transition: animation="idle", overlays=[{"track": 0,
     "animation": "walk", "start": 1.0, "loop": true, "mix": 0.2}],
-    duration=2. mix: default crossfade in seconds between the animations of
-    a track (AnimationStateData.defaultMix in the game).
+    duration=2. A one-shot layer the game clears with addEmptyAnimation takes
+    "mix_out": seconds (the track fades back to the tracks below instead of
+    holding its last frame): [{"track": 1, "animation": "wave", "start": 1,
+    "mix_out": 0.2}]. mix: default crossfade in seconds between the animations
+    of a track (AnimationStateData.defaultMix in the game).
     `duration` sets the length of the capture (default: the main animation).
     loop=False plays the main animation once and holds its last pose (one-shot
     actions, blink) instead of restarting it when `duration` is longer.

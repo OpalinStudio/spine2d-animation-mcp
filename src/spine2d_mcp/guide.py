@@ -15,25 +15,100 @@ SERVER_INSTRUCTIONS = (
     "left untouched). Coordinates are Spine's: y-up, bone-local, rotations in degrees "
     "counter-clockwise; bone timeline values are offsets from the setup pose (scale is a "
     "multiplier).\n"
+    "ART RULE: a rig cannot fix bad art. Before rigging, check_art on the parts and fix every "
+    "warning (clean_art for hard edges and fragments, redraw the rest); once the skeleton "
+    "exists, check_art(skeleton=...) again for the joints. spine_reference(\"art\") says how "
+    "the parts must be drawn or generated.\n"
     "QUALITY RULE: never deliver an animation you have not looked at. After every animation "
     "change: (1) analyze_animation and fix its warnings, (2) runtime_render format=\"sheet\" "
     "(the tool returns the picture: look at every pose) and format=\"onion\" with track_bones "
     "to judge arcs and spacing, (3) correct and re-render until it is right. A valid file is "
     "not a good animation.\n"
-    "Flow: import_psd_to_spine or create_skeleton -> rig (IK on limbs, physics on hair / cloth "
-    "/ tails, meshes, sliders) -> block the key poses (set_keyframes) or start from "
-    "generate_animation -> curves, overlap (offset_keys), exaggeration (scale_keys) -> "
-    "analyze_animation + runtime_render -> runtime_validate -> spine_import_data (.spine "
-    "project) / export_game_pack. Call spine_reference(\"quality\") before animating, "
-    "spine_reference(\"recipes\") for ready-made numbers, spine_reference(\"checklist\") "
-    "before delivering."
+    "Flow: art (check_art) -> import_psd_to_spine or create_skeleton -> rig (IK on limbs, "
+    "physics on hair / cloth / tails, meshes, sliders) -> block the key poses (set_keyframes) "
+    "or start from generate_animation -> curves, overlap (offset_keys), exaggeration "
+    "(scale_keys) -> analyze_animation + runtime_render -> runtime_validate -> "
+    "spine_import_data (.spine project) / export_game_pack. Call spine_reference(\"quality\") "
+    "before animating, spine_reference(\"recipes\") for ready-made numbers, "
+    "spine_reference(\"checklist\") before delivering."
 )
 
+ART = {
+    "why": (
+        "Most of what reads as 'low quality animation' is decided before the first key: parts "
+        "cut out of one finished illustration cannot be posed differently, a hand drawn as one "
+        "image cannot bend a finger, a hard-edged mask shimmers when it rotates. Draw (or "
+        "generate) the character FOR animation, then check it with check_art."
+    ),
+    "design for animation": [
+        "simple, readable shapes: tube sleeves and legs, mitten-like hands, big head; a cape, "
+        "coat or skirt that hides the shoulder and hip joints makes every pose easier",
+        "a NEUTRAL base pose: limbs straight, apart from the body and from each other, seen "
+        "flat (no foreshortening); a limb drawn bent or pointing at the viewer only works in "
+        "that one pose",
+        "closed dark outlines on every part: they hide the seam where two parts overlap",
+    ],
+    "one image per moving part": [
+        "limbs in segments: upper arm, forearm, hand; thigh, shin, foot (import_psd_to_spine "
+        "names: arm_left, forearm_left, hand_left, leg_left, shin_left, foot_left)",
+        "head parts apart: eyes (open, half, closed), pupils, brows, mouth shapes (rest, smile, "
+        "open, o, wide), ears, each hair lock or tuft",
+        "everything loose apart: tail, tie, scarf, cape panels, earrings, straps; long ones in "
+        "one image that a mesh will bend",
+        "props apart (cigar, glass, weapon, instrument), drawn whole even where a hand covers them",
+    ],
+    "hidden ends (underpaint)": [
+        "every part is drawn COMPLETE, also where another part covers it: the top of the arm "
+        "continues under the shoulder, the neck under the head and into the torso",
+        "end each segment with a rounded cap centred on the joint, extending past the pivot by "
+        "about half the limb's thickness: the parts can then rotate 40 degrees or more without "
+        "opening a hole (check_art skeleton=... measures it: joint_gap)",
+    ],
+    "hands": [
+        "a hand as one image only moves as a block: draw 4 to 6 hand poses per side (relaxed, "
+        "open, fist, point, hold, snap) at the same wrist position and swap them with slot "
+        "attachment keys on the pose change",
+        "for a hero hand that must act: palm, thumb and each finger (or finger group) as "
+        "separate parts, two bones per finger",
+        "the wrist end goes under the cuff / sleeve; the cuff is its own part on the forearm",
+    ],
+    "clean cut-outs": [
+        "transparent background, antialiased outline (no thresholded mask), no leftover pixels "
+        "around the part, no halo of the old background, no see-through patch inside",
+        "same resolution, line weight, palette and light direction for every part (generate "
+        "them from the same reference sheet); work at 2x the size shown in the game",
+        "leave the part its own canvas with a few transparent pixels around it; do not crop a "
+        "limb where it should continue under its neighbour",
+    ],
+    "effects": [
+        "smoke, sparks, impacts, glows: short frame-by-frame sequences (6 to 16 images named "
+        "name_00, name_01...) on a region attachment with sequence_count, keyed with "
+        'set_keyframes kind="sequence"; a puff of smoke also hides an attachment swap',
+    ],
+    "generating the parts with an image model": [
+        "first a character sheet in the neutral pose (the reference for every later request)",
+        "then one request per part, always with the sheet attached: 'the left forearm of this "
+        "character alone, straight, vertical, complete with both rounded ends, same line "
+        "weight and colours, transparent background, nothing else in the image'",
+        "after each batch: check_art on the folder; clean_art for hard_edges / fragments; "
+        "regenerate what has frayed_edges, light_fringe or soft_art, quoting the `fix` text",
+        "after the rig: check_art(skeleton=...) and regenerate the parts named by joint_gap "
+        "with the longer hidden end it asks for",
+    ],
+}
+
 WORKFLOW = {
+    "0 check the art": [
+        'spine_reference("art") for how the parts must be drawn or generated',
+        "check_art on the folder of parts: look at the annotated sheet, clean_art for "
+        "hard_edges / fragments, redraw or regenerate the parts with the other warnings",
+        "do not rig a part that still has a warning: a rig cannot fix a bad cut-out",
+    ],
     "1 look at the rig": [
         "inspect_skeleton (summary) for bones, slots, constraints, animations",
         'runtime_render format="png" debug=true: where the pivots, bone directions, meshes and '
         "clipping polygons really are",
+        "check_art(skeleton=...): joints that open a hole when bent, images drawn too large",
     ],
     "2 rig for animation": [
         "IK on legs and arms (add_ik_constraint create_target=true): feet can stay planted, hands "
@@ -168,9 +243,26 @@ QUALITY = {
             "A -> B with overlays track 0 and the game's mix duration. A property keyed in A "
             "and not in B returns to the setup pose during the mix."
         ),
-        "tracks": "Layer independent actions on tracks (blink, aim, hit flash) instead of baking them into every animation.",
+        "tracks": (
+            "Layer independent actions on tracks (blink, aim, hit flash) instead of baking them "
+            "into every animation. A one-shot layer keys ONLY the parts that act, so the loop "
+            "keeps playing under it. Games often set it without a mix-in: every bone it keys "
+            "then jumps from wherever the loop left it to the layer's first key. Measure it: "
+            "runtime_sample animation=<loop> overlays=[{track, animation, start, mix_out}] "
+            "against the loop alone, on the entry frame, for several `start` values. A limb "
+            "that leaves its IK target (hand lets go, waves, reaches the face) must not key the "
+            "target: key its bones' rotations and fade the IK mix 1 -> 0 -> 1, so it starts "
+            "from, and returns to, wherever the loop holds the target."
+        ),
         "events": "Key events on contacts and impacts (add_event_keys): footsteps, hit frame, sound, VFX spawn. runtime_render / runtime_sample return the events fired.",
-        "IK": "An IK constraint at mix 1 overrides its bones' rotation keys. Animate the target, or key the IK mix to 0 for an FK section.",
+        "IK": (
+            "An IK constraint at mix 1 overrides its bones' rotation keys. Animate the target, "
+            "or key the IK mix to 0 for an FK section. A target out of reach locks the limb "
+            "straight and the hand never follows its keys: runtime_sample the hand and its "
+            "target, their distance must be 0. An IK key without bendPositive means true: a "
+            "layer played alone and the same layer over a loop that keys the IK can bend the "
+            "elbow opposite ways, so review layers over their loop, never alone."
+        ),
         "performance": "Few keys with curves, modest mesh vertex counts, clipping only where needed (it is the most expensive attachment), binary export + premultiplied-alpha atlas (export_game_pack).",
         "glow": "Additive slots need a background to add light to: judge them with background=<game color>.",
     },
@@ -235,10 +327,23 @@ RECIPES = {
         "one short animation per expression pose (brows, eyes, mouth bones or attachment swaps)",
         "add_slider per expression, driven by a control bone or keyed by time; mix them in any animation",
     ],
+    "arm that must change pose (seated or holding character)": [
+        "chain it: shoulder -> upper arm -> forearm -> hand, all children of the torso, never "
+        "of the furniture",
+        "to keep the hand on an armrest or a prop: add_ik_constraint(bones=[upper arm, "
+        "forearm], create_target=true, target_parent=<the armrest or prop bone>); the body can "
+        "then move while the hand stays put",
+        "key the IK mix to 0 (set_keyframes kind=\"ik\") for the section where the arm acts, "
+        "swap the hand drawing on the pose change (slot attachment key), and cover the swap "
+        "with a fast move",
+        "check_art(skeleton=...) for joint_gap at the shoulder, elbow and wrist before animating",
+    ],
 }
 
 CHECKLIST = [
-    "analyze_animation reports no warning (or each remaining one is deliberate)",
+    "check_art has no warning on the parts and no joint_gap on the skeleton",
+    "analyze_animation reports no warning (or each remaining one is deliberate); its "
+    "`amplitude` shows the whole character alive, not a few moving bits",
     "sheet on the game background: every key pose has a clear silhouette, nothing clips or detaches",
     "onion with track_bones on hands / feet / head: smooth arcs, spacing eases in and out",
     "loops: no pop and no tick at the seam; physics rendered with warmup",
@@ -246,6 +351,13 @@ CHECKLIST = [
     "no frozen frame: holds keep a little life",
     "overlap: limbs and loose parts trail the body, they do not stop on the same frame",
     "transitions to and from the neighbouring animations tested with the game's mix duration",
+    "one-shot layers reviewed OVER their loop (overlays + mix_out), started at several moments: "
+    "entry jump of each keyed bone measured with runtime_sample; limbs that leave an IK target "
+    "fade the IK mix instead of keying the target",
+    "IK targets reachable: hand / foot to target distance is 0 in runtime_sample",
     "events on contacts / hits; draw order changes where limbs cross",
-    "runtime_validate passes with the atlas the game will ship",
+    "runtime_validate passes with the atlas the game will ship; durations and events unchanged "
+    "when replacing an animation the game already triggers",
+    "the report gives the measured numbers and lists what was NOT checked (real game, motion at "
+    "speed, other screen sizes); 'no error' is never said from stills alone",
 ]

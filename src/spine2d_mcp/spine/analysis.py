@@ -271,10 +271,11 @@ def _speeds(xs: list[float], ys: list[float]) -> list[float]:
 
 def motion_report(
     sampled: dict, loop: bool, physics_bones: set[str] | None = None,
-    ground_bones: list[str] | None = None,
+    ground_bones: list[str] | None = None, drawn_bones: set[str] | None = None,
 ) -> dict:
     """Review of the motion the runtime really produces. `sampled` is the
-    result of runtime.render.sample(loop=False, include_last=True)."""
+    result of runtime.render.sample(loop=False, include_last=True).
+    drawn_bones: the bones that carry art, for the amplitude measure."""
     times: list[float] = sampled["times"]
     tracks: dict[str, dict[str, list[float]]] = sampled["tracks"]
     issues: list[dict] = []
@@ -355,6 +356,39 @@ def motion_report(
                         for b in sorted(travel, key=travel.get, reverse=True)[:5] if travel[b] > 0],
         "peak_speed": _num(max((max(s) for s in speeds.values() if s), default=0.0) / dt),
     }
+
+    # Amplitude: how much of the character moves, and how far.
+    drawn = [b for b in tracks if b in drawn_bones] if drawn_bones else []
+    if len(drawn) >= 4:
+        alive, ranges, turns = [], [], []
+        for b in drawn:
+            tr = tracks[b]
+            reach = math.hypot(max(tr["x"]) - min(tr["x"]), max(tr["y"]) - min(tr["y"])) / size
+            acc = lo = hi = 0.0
+            for r0, r1 in zip(tr["rotation"], tr["rotation"][1:]):
+                acc += (r1 - r0 + 540) % 360 - 180
+                lo, hi = min(lo, acc), max(hi, acc)
+            ranges.append(reach)
+            turns.append(hi - lo)
+            if reach > 0.005 or hi - lo > 2:
+                alive.append(b)
+        share = len(alive) / len(drawn)
+        average = 100 * sum(ranges) / len(ranges)
+        out["amplitude"] = {
+            "drawn_bones": len(drawn), "moving_pct": round(100 * share),
+            "average_range_pct_of_size": _num(average), "max_rotation_deg": round(max(turns)),
+            "still": sorted(set(drawn) - set(alive))[:12],
+        }
+        if len(drawn) >= 6 and (share < 0.5 or average < 2.0):
+            issues.append(_issue(
+                "info", "timid_motion", f"{round(100 * share)} % of the drawn bones move, "
+                f"average range {_num(average)} % of the character's size",
+                "most of the character stays frozen or barely moves: on screen it reads as a still "
+                "picture with a few moving bits (a hand-animated game idle measured as reference "
+                "moves 88 % of its drawn bones over 21 % of the character's size on average)",
+                "involve the whole body (weight shift, torso, head, both arms, loose parts on "
+                "physics) and push the main action with scale_keys factor 2 to 5; keep it small "
+                "only if a calm background character is what is wanted"))
 
     # Ground contact: where the feet touch, and how fast the ground must move.
     if ground_bones:
