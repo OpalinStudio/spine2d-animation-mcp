@@ -5,7 +5,7 @@ description = "MCP server to rig, animate, preview and export Spine 4.3 skeleton
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.2.0",
+    "mcp>=1.2.0,<2",
     "psd-tools>=1.9.32",
     "Pillow>=10.0.0",
     "numpy>=1.26",
